@@ -112,7 +112,8 @@ struct TURBOSEQUENCE_SHADER_LF_API FMeshUnitComputeShader_Params_Lf
 	TArray<int32> AnimationStartIndex_RenderThread;
 	TArray<int32> AnimationEndIndex_RenderThread;
 	TArray<int32> AnimationFramePose0_RenderThread;
-
+	TArray<int32> AnimationFramePose1_RenderThread;
+	TArray<int32> AnimationFrameAlpha_RenderThread;
 	TArray<int32> AnimationWeights_RenderThread;
 
 	TArray<int32> AnimationLayerIndex_RenderThread;
@@ -247,6 +248,8 @@ public:
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<min16int>, AnimationEndIndex_StructuredBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<min16int>, AnimationWeight_StructuredBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<int>, AnimationFramePose0_StructuredBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<int>, AnimationFramePose1_StructuredBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<min16int>, AnimationFrameAlpha_StructuredBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<min16uint>, AnimationLayerIndex_StructuredBuffer)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<min16uint>, AnimationLayerLibrary_StructuredBuffer)

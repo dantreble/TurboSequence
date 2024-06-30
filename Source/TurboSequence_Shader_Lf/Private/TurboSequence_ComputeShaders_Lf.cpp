@@ -219,6 +219,20 @@ void FMeshUnit_Compute_Shader_Execute_Lf::DispatchRenderThread(
 					FTurboSequence_BoneTransform_CS_Lf::AnimationFramePose0DebugName, Params.ShaderID), PF_R32_SINT,
 				true);
 
+		MeshUnitPassParameters->AnimationFramePose1_StructuredBuffer =
+			FTurboSequence_Helper_Lf::TCreateStructuredReadBufferFromTArray_Custom_Out(
+				GraphBuilder, Params.AnimationFramePose1_RenderThread,
+				*FTurboSequence_Helper_Lf::FormatDebugName(
+					FTurboSequence_BoneTransform_CS_Lf::AnimationFramePose1DebugName, Params.ShaderID), PF_R32_SINT,
+				true);
+
+		MeshUnitPassParameters->AnimationFrameAlpha_StructuredBuffer =
+			FTurboSequence_Helper_Lf::TCreateStructuredReadBufferFromTArray_Custom_Out(
+				GraphBuilder, Params.AnimationFrameAlpha_RenderThread,
+				*FTurboSequence_Helper_Lf::FormatDebugName(
+					FTurboSequence_BoneTransform_CS_Lf::AnimationFrameAlphaDebugName, Params.ShaderID), PF_R16_SINT,
+				true);
+
 		MeshUnitPassParameters->AnimationWeight_StructuredBuffer =
 			FTurboSequence_Helper_Lf::TCreateStructuredReadBufferFromTArray_Custom_Out(
 				GraphBuilder, Params.AnimationWeights_RenderThread,

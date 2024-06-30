@@ -40,6 +40,8 @@ StructuredBuffer<min16int> AnimationEndIndex_StructuredBuffer; // Start Index + 
 StructuredBuffer<min16int> AnimationWeight_StructuredBuffer;
 
 StructuredBuffer<int> AnimationFramePose0_StructuredBuffer;
+StructuredBuffer<int> AnimationFramePose1_StructuredBuffer;
+StructuredBuffer<min16int> AnimationFrameAlpha_StructuredBuffer;
 
 StructuredBuffer<min16uint> AnimationLayerIndex_StructuredBuffer;
 
@@ -490,38 +492,59 @@ float3x4 BendBoneFromAnimations_Full(in uint BoneIndexCPU, in int AnimStartIndex
 
 
 		uint AnimationOffset0 = AnimationFramePose0_StructuredBuffer[DataIdx];
+		uint AnimationOffset1 = AnimationFramePose1_StructuredBuffer[DataIdx];
 
-		uint LibraryIndexCurrent = AnimationOffset0 + BoneIndexCPU * 3;
+		uint LibraryIndexCurrent0 = AnimationOffset0 + BoneIndexCPU * 3;
+		uint LibraryIndexCurrent1 = AnimationOffset1 + BoneIndexCPU * 3;
 
-		float4 C0 = R_AnimationLibrary_InputTexture[GetDimensionsFromIndex3D(
-			LibraryIndexCurrent, AnimTextureSizeX, AnimTextureSizeY)];
-		float4 C1 = R_AnimationLibrary_InputTexture[GetDimensionsFromIndex3D(
-			LibraryIndexCurrent + 1, AnimTextureSizeX, AnimTextureSizeY)];
-		float4 C2 = R_AnimationLibrary_InputTexture[GetDimensionsFromIndex3D(
-			LibraryIndexCurrent + 2, AnimTextureSizeX, AnimTextureSizeY)];
+		float4 C0_0 = R_AnimationLibrary_InputTexture[GetDimensionsFromIndex3D(
+			LibraryIndexCurrent0, AnimTextureSizeX, AnimTextureSizeY)];
+		float4 C1_0 = R_AnimationLibrary_InputTexture[GetDimensionsFromIndex3D(
+			LibraryIndexCurrent0 + 1, AnimTextureSizeX, AnimTextureSizeY)];
+		float4 C2_0 = R_AnimationLibrary_InputTexture[GetDimensionsFromIndex3D(
+			LibraryIndexCurrent0 + 2, AnimTextureSizeX, AnimTextureSizeY)];
 
-		float3x4 RuntimeBoneMatrixCurrent = float3x4(C0, C1, C2);
+		float3x4 RuntimeBoneMatrixCurrent0 = float3x4(C0_0, C1_0, C2_0);
 
-		FMatrix_Lf Atom = GetIdentity_Matrix();
-		Atom.SetMatrix(RuntimeBoneMatrixCurrent);
+		float4 C0_1 = R_AnimationLibrary_InputTexture[GetDimensionsFromIndex3D(
+			LibraryIndexCurrent1, AnimTextureSizeX, AnimTextureSizeY)];
+		float4 C1_1 = R_AnimationLibrary_InputTexture[GetDimensionsFromIndex3D(
+			LibraryIndexCurrent1 + 1, AnimTextureSizeX, AnimTextureSizeY)];
+		float4 C2_1 = R_AnimationLibrary_InputTexture[GetDimensionsFromIndex3D(
+			LibraryIndexCurrent1 + 2, AnimTextureSizeX, AnimTextureSizeY)];
+
+		float3x4 RuntimeBoneMatrixCurrent1 = float3x4(C0_1, C1_1, C2_1);
+
+		FMatrix_Lf Atom0 = GetIdentity_Matrix();
+		Atom0.SetMatrix(RuntimeBoneMatrixCurrent0);
+
+		FMatrix_Lf Atom1 = GetIdentity_Matrix();
+		Atom1.SetMatrix(RuntimeBoneMatrixCurrent1);
+
+
+		float FrameAlpha = (float)AnimationFrameAlpha_StructuredBuffer[DataIdx] / (float)0x7FFF;
+		
+		float3 ScaleInterpolated = lerp( Atom0.Scale , Atom1.Scale,  FrameAlpha);
+		float3 TranslationInterpolated = lerp(Atom0.Translation, Atom1.Translation, FrameAlpha);
+		float4 RotationInterpolated = Slerp_NotNormalized( Atom0.Rotation, Atom1.Rotation, FrameAlpha);
 
 		if (!bFoundFirstAnimation)
 		{
 			bFoundFirstAnimation = true;
-			OutAtom.SetScale(Scale3_Float(Atom.Scale, Scalar));
-			OutAtom.SetTranslation(Scale3_Float(Atom.Translation, Scalar));
+			OutAtom.SetScale(Scale3_Float(ScaleInterpolated, Scalar));
+			OutAtom.SetTranslation(Scale3_Float(TranslationInterpolated, Scalar));
 			// float RotationW = Scalar;
 			// FullRotationWeight += RotationW;
 			// if (FullRotationWeight > 1)
 			// {
 			// 	RotationW -= abs(1.0f - FullRotationWeight);
 			// }
-			OutAtom.SetRotation(Atom.Rotation * clamp(Scalar, 0.0f, 1.0f));
+			OutAtom.SetRotation(RotationInterpolated * clamp(Scalar, 0.0f, 1.0f));
 		}
 		else
 		{
-			OutAtom.SetScale(OutAtom.Scale + Scale3_Float(Atom.Scale, Scalar));
-			OutAtom.SetTranslation(OutAtom.Translation + Scale3_Float(Atom.Translation, Scalar));
+			OutAtom.SetScale(OutAtom.Scale + Scale3_Float(ScaleInterpolated, Scalar));
+			OutAtom.SetTranslation(OutAtom.Translation + Scale3_Float(TranslationInterpolated, Scalar));
 			// float RotationW = Scalar;
 			// FullRotationWeight += RotationW;
 			// if (FullRotationWeight > 1)
@@ -530,7 +553,7 @@ float3x4 BendBoneFromAnimations_Full(in uint BoneIndexCPU, in int AnimStartIndex
 			// }
 			OutAtom.SetRotation(
 				Normalize_Quaternion(
-					Scale_Quaternion(OutAtom.Rotation, Atom.Rotation, clamp(Scalar, 0.0f, 1.0f))));
+					Scale_Quaternion(OutAtom.Rotation, RotationInterpolated, clamp(Scalar, 0.0f, 1.0f))));
 		}
 
 

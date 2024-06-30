@@ -227,7 +227,10 @@ struct TURBOSEQUENCE_LF_API FAnimationMetaData_RenderThread_Lf
 	}
 
 	int32 GPUAnimationIndex_0 = GET0_NUMBER;
+	int32 GPUAnimationIndex_1 = GET0_NUMBER;
 
+	uint16 FrameAlpha = GET0_NUMBER;
+	
 	uint16 FinalAnimationWeight = GET0_NUMBER;
 
 	uint16 LayerMaskIndex = GET0_NUMBER;
@@ -296,6 +299,9 @@ struct TURBOSEQUENCE_LF_API FAnimationMetaData_Lf
 	bool bIsSelfManagedAnimation = false;
 
 	int32 CPUAnimationIndex_0 = GET0_NUMBER;
+	int32 CPUAnimationIndex_1 = GET0_NUMBER;
+	
+	float FrameAlpha = GET0_NUMBER;
 
 	uint32 AnimationID = GET0_NUMBER;
 

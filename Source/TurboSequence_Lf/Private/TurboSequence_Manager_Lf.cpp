@@ -1010,6 +1010,8 @@ void ATurboSequence_Manager_Lf::SolveMeshes_RenderThread(FRHICommandListImmediat
 	MeshParams.AnimationEndIndex_RenderThread.SetNumUninitialized(NumMeshes_RenderThread);
 
 	MeshParams.AnimationFramePose0_RenderThread.SetNumUninitialized(NumAnimations_RenderThread);
+	MeshParams.AnimationFramePose1_RenderThread.SetNumUninitialized(NumAnimations_RenderThread);
+	MeshParams.AnimationFrameAlpha_RenderThread.SetNumUninitialized(NumAnimations_RenderThread);
 	MeshParams.AnimationWeights_RenderThread.SetNumUninitialized(NumAnimations_RenderThread);
 	MeshParams.AnimationLayerIndex_RenderThread.SetNumUninitialized(NumAnimations_RenderThread);
 
@@ -1027,9 +1029,9 @@ void ATurboSequence_Manager_Lf::SolveMeshes_RenderThread(FRHICommandListImmediat
 	//FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.SkinWeightOffsetLod_RenderThread, 4);
 	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationStartIndex_RenderThread, 5);
 	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationEndIndex_RenderThread, 6);
-	//FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationFrameAlpha_RenderThread, 7);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationFrameAlpha_RenderThread, 7);
 	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationFramePose0_RenderThread, 8);
-	//FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationFramePose1_RenderThread, 9);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationFramePose1_RenderThread, 9);
 	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationWeights_RenderThread, 10);
 	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationLayerIndex_RenderThread, 11);
 	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.BoneSpaceAnimationIKData_RenderThread, 12);
@@ -1093,6 +1095,8 @@ void ATurboSequence_Manager_Lf::SolveMeshes_RenderThread(FRHICommandListImmediat
 						int32 BufferIndex = CurrentAnimationIndex;
 
 						MeshParams.AnimationFramePose0_RenderThread[BufferIndex] = Animation.GPUAnimationIndex_0;
+						MeshParams.AnimationFramePose1_RenderThread[BufferIndex] = Animation.GPUAnimationIndex_1;
+						MeshParams.AnimationFrameAlpha_RenderThread[BufferIndex] = Animation.FrameAlpha;
 						MeshParams.AnimationWeights_RenderThread[BufferIndex] = Animation.FinalAnimationWeight;
 						MeshParams.AnimationLayerIndex_RenderThread[BufferIndex] = Animation.LayerMaskIndex;
 

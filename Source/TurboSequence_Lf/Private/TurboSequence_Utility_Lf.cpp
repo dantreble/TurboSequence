@@ -1124,22 +1124,86 @@ bool FTurboSequence_Utility_Lf::IsValidBufferIndex(const FSkinnedMeshGlobalLibra
 }
 
 
-int32 FTurboSequence_Utility_Lf::AddAnimationToLibraryChunked(FSkinnedMeshGlobalLibrary_Lf& Library,
-                                                              FCriticalSection& CriticalSection,
-                                                              int32& CPUIndices,
-                                                              const FSkinnedMeshRuntime_Lf& Runtime,
-                                                              const FAnimationMetaData_Lf& Animation)
+int32 FTurboSequence_Utility_Lf::AddAnimationPoseToLibraryChunked(int32 CPUIndex,
+                                                                  FSkinnedMeshGlobalLibrary_Lf& Library,
+                                                                  FCriticalSection& CriticalSection,
+                                                                  const FAnimationMetaData_Lf& Animation,
+                                                                  FAnimationLibraryData_Lf& LibraryAnimData,
+                                                                  const FReferenceSkeleton& ReferenceSkeleton,
+                                                                  const FReferenceSkeleton& AnimationSkeleton)
+{
+	int32 GPUIndex = LibraryAnimData.KeyframesFilled[CPUIndex];
+
+	if (GPUIndex > INDEX_NONE)
+	{
+		return GPUIndex;
+	}
+
+	GPUIndex = LibraryAnimData.KeyframesFilled[CPUIndex] = Library.AnimationLibraryMaxNum;
+
+	if (!LibraryAnimData.AnimPoses.Contains(CPUIndex))
+	{
+		const float FrameTime = static_cast<float>(CPUIndex) / static_cast<float>(LibraryAnimData.MaxFrames -
+			GET1_NUMBER) * Animation.Animation->GetPlayLength();
+
+		FAnimPose_Lf PoseData;
+		FTurboSequence_Helper_Lf::GetPoseInfo(FrameTime, Animation.Animation, LibraryAnimData.PoseOptions,
+		                                      PoseData, CriticalSection);
+
+		FCPUAnimationPose_Lf CPUPose;
+		CPUPose.Pose = PoseData;
+		CPUPose.BelongsToKeyframe = CPUIndex;
+		LibraryAnimData.AnimPoses.Add(CPUIndex, CPUPose);
+	}
+
+	uint32 AnimationDataIndex = Library.AnimationLibraryDataAllocatedThisFrame.Num();
+
+	const int32 NumAllocations = LibraryAnimData.NumBones * GET3_NUMBER;
+	Library.AnimationLibraryMaxNum += NumAllocations;
+
+	Library.AnimationLibraryDataAllocatedThisFrame.AddUninitialized(NumAllocations);
+	//LibraryAnimData.AnimPoses[Pose0].RawData.AddUninitialized(NumAllocations);
+	for (uint16 b = GET0_NUMBER; b < LibraryAnimData.NumBones; ++b)
+	{
+		const FTurboSequence_TransposeMatrix_Lf& BoneSpaceTransform = GetBoneTransformFromLocalPoses(
+			b, LibraryAnimData, ReferenceSkeleton, AnimationSkeleton, LibraryAnimData.AnimPoses[CPUIndex].Pose,
+			Animation.Animation);
+
+		// NOTE: Keep in mind this matrix is not in correct order after uploading it
+		//		 for performance reason we are using matrix calculations which match the order
+		//		 in the Vertex Shader
+		for (uint8 M = GET0_NUMBER; M < GET3_NUMBER; ++M)
+		{
+			Library.AnimationLibraryDataAllocatedThisFrame[AnimationDataIndex] = BoneSpaceTransform.Colum[M];
+			//LibraryAnimData.AnimPoses[Pose0].RawData[b * GET3_NUMBER + M] = BoneData;
+
+			AnimationDataIndex++;
+		}
+	}
+	return GPUIndex;
+}
+
+bool FTurboSequence_Utility_Lf::AddAnimationToLibraryChunked(FSkinnedMeshGlobalLibrary_Lf& Library,
+                                                             FCriticalSection& CriticalSection,
+                                                             int32& CPUIndex0,
+                                                             int32& GPUIndex0,
+                                                             int32& CPUIndex1, int32& GPUIndex1, float& FrameAlpha,
+                                                             const FSkinnedMeshRuntime_Lf& Runtime,
+                                                             const FAnimationMetaData_Lf& Animation)
 {
 	// Slow...
 	FScopeLock Lock(&CriticalSection);
-
-	int32 PoseIndices = GET0_NUMBER;
-	CPUIndices = GET0_NUMBER;
-
+	
+	CPUIndex0 = GET0_NUMBER;
+	CPUIndex1 = GET0_NUMBER;
+	GPUIndex0 = GET0_NUMBER;
+	GPUIndex1 = GET0_NUMBER;
+	FrameAlpha = GET0_NUMBER;
+	
 	if (!Library.AnimationLibraryData.Contains(Animation.AnimationLibraryHash))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("Don't Contains Animation Library Data"));
-		return PoseIndices;
+		return false;
 	}
 
 
@@ -1156,30 +1220,17 @@ int32 FTurboSequence_Utility_Lf::AddAnimationToLibraryChunked(FSkinnedMeshGlobal
 			LibraryAnimData.KeyframesFilled.Init(INDEX_NONE, LibraryAnimData.MaxFrames);
 			if (!LibraryAnimData.KeyframesFilled.Num())
 			{
-				return PoseIndices;
+				return false;
 			}
 		}
 
-		int32 Pose0;
-		AnimationCodecTimeToIndex(Animation.AnimationNormalizedTime, LibraryAnimData.MaxFrames,
-		                          Animation.Animation->Interpolation, Pose0);
+		FrameAlpha = AnimationCodecTimeToIndex(Animation.AnimationNormalizedTime, LibraryAnimData.MaxFrames,
+			Animation.Animation->Interpolation, CPUIndex0, CPUIndex1);
 
-		if (!LibraryAnimData.KeyframesFilled.IsValidIndex(Pose0))
+		if (!(LibraryAnimData.KeyframesFilled.IsValidIndex(CPUIndex0) && LibraryAnimData.KeyframesFilled.IsValidIndex(CPUIndex1)))
 		{
-			return PoseIndices;
+			return false;
 		}
-
-		PoseIndices = LibraryAnimData.KeyframesFilled[Pose0];
-		CPUIndices = Pose0;
-
-		if (LibraryAnimData.KeyframesFilled[Pose0] > INDEX_NONE)
-		{
-			return PoseIndices;
-		}
-
-		LibraryAnimData.KeyframesFilled[Pose0] = Library.AnimationLibraryMaxNum;
-
-		PoseIndices = LibraryAnimData.KeyframesFilled[Pose0];
 
 		const FReferenceSkeleton& ReferenceSkeleton = GetReferenceSkeleton(Runtime.DataAsset);
 
@@ -1216,7 +1267,7 @@ int32 FTurboSequence_Utility_Lf::AddAnimationToLibraryChunked(FSkinnedMeshGlobal
 
 			FAnimPose_Lf AlphaPose;
 			FTurboSequence_Helper_Lf::GetPoseInfo(GET0_NUMBER, Animation.Animation, LibraryAnimData.PoseOptions,
-			                                      AlphaPose, CriticalSection);
+												  AlphaPose, CriticalSection);
 
 			for (uint16 b = GET0_NUMBER; b < LibraryAnimData.NumBones; ++b)
 			{
@@ -1228,56 +1279,18 @@ int32 FTurboSequence_Utility_Lf::AddAnimationToLibraryChunked(FSkinnedMeshGlobal
 				}
 			}
 		}
-
-
-		if (!LibraryAnimData.AnimPoses.Contains(Pose0))
-		{
-			float FrameTime0 = static_cast<float>(Pose0) / static_cast<float>(LibraryAnimData.MaxFrames -
-				GET1_NUMBER) * Animation.Animation->GetPlayLength();
-
-			FAnimPose_Lf PoseData_0;
-			FTurboSequence_Helper_Lf::GetPoseInfo(FrameTime0, Animation.Animation, LibraryAnimData.PoseOptions,
-			                                      PoseData_0, CriticalSection);
-
-			FCPUAnimationPose_Lf CPUPose_0;
-			CPUPose_0.Pose = PoseData_0;
-			CPUPose_0.BelongsToKeyframe = Pose0;
-			LibraryAnimData.AnimPoses.Add(Pose0, CPUPose_0);
-		}
-
-		uint32 AnimationDataIndex = Library.AnimationLibraryDataAllocatedThisFrame.Num();
-
-		int32 NumAllocations = LibraryAnimData.NumBones * GET3_NUMBER;
-		Library.AnimationLibraryMaxNum += NumAllocations;
-
-		Library.AnimationLibraryDataAllocatedThisFrame.AddUninitialized(NumAllocations);
-		//LibraryAnimData.AnimPoses[Pose0].RawData.AddUninitialized(NumAllocations);
-		for (uint16 b = GET0_NUMBER; b < LibraryAnimData.NumBones; ++b)
-		{
-			const FTurboSequence_TransposeMatrix_Lf& BoneSpaceTransform = GetBoneTransformFromLocalPoses(
-				b, LibraryAnimData, ReferenceSkeleton, AnimationSkeleton, LibraryAnimData.AnimPoses[Pose0].Pose,
-				Animation.Animation);
-
-			// NOTE: Keep in mind this matrix is not in correct order after uploading it
-			//		 for performance reason we are using matrix calculations which match the order
-			//		 in the Vertex Shader
-			for (uint8 M = GET0_NUMBER; M < GET3_NUMBER; ++M)
-			{
-				Library.AnimationLibraryDataAllocatedThisFrame[AnimationDataIndex] = BoneSpaceTransform.Colum[M];
-				//LibraryAnimData.AnimPoses[Pose0].RawData[b * GET3_NUMBER + M] = BoneData;
-
-				AnimationDataIndex++;
-			}
-		}
+		
+		GPUIndex0 = AddAnimationPoseToLibraryChunked(CPUIndex0, Library, CriticalSection, Animation, LibraryAnimData, ReferenceSkeleton, AnimationSkeleton);
+		GPUIndex1 = AddAnimationPoseToLibraryChunked(CPUIndex1, Library, CriticalSection, Animation, LibraryAnimData, ReferenceSkeleton, AnimationSkeleton);
 	}
 	else // Is Rest Pose
 	{
-		CPUIndices = GET0_NUMBER;
+		CPUIndex0 = CPUIndex1 = GET0_NUMBER;
 
 		if (LibraryAnimData.KeyframesFilled.Num() && LibraryAnimData.KeyframesFilled[GET0_NUMBER] > INDEX_NONE)
 		{
-			PoseIndices = LibraryAnimData.KeyframesFilled[GET0_NUMBER];
-			return PoseIndices;
+			CPUIndex0 = CPUIndex1 = LibraryAnimData.KeyframesFilled[GET0_NUMBER];
+			return true;
 		}
 
 		if (!LibraryAnimData.KeyframesFilled.Num())
@@ -1292,7 +1305,7 @@ int32 FTurboSequence_Utility_Lf::AddAnimationToLibraryChunked(FSkinnedMeshGlobal
 		{
 			LibraryAnimData.KeyframesFilled[GET0_NUMBER] = Library.AnimationLibraryMaxNum;
 		}
-		PoseIndices = LibraryAnimData.KeyframesFilled[GET0_NUMBER];
+		GPUIndex0 = GPUIndex1 = LibraryAnimData.KeyframesFilled[GET0_NUMBER];
 
 		if (!LibraryAnimData.AnimPoses.Contains(GET0_NUMBER))
 		{
@@ -1330,7 +1343,7 @@ int32 FTurboSequence_Utility_Lf::AddAnimationToLibraryChunked(FSkinnedMeshGlobal
 		}
 	}
 
-	return PoseIndices;
+	return true;
 }
 
 void FTurboSequence_Utility_Lf::CustomizeMesh(FSkinnedMeshRuntime_Lf& Runtime,
@@ -2879,15 +2892,16 @@ void FTurboSequence_Utility_Lf::SolveAnimations(FSkinnedMeshRuntime_Lf& Runtime,
 			}
 		}
 
-		int32 CPUPoses;
-		int32 GPUPoses = AddAnimationToLibraryChunked(Library, ThreadContext->CriticalSection, CPUPoses,
-		                                              Runtime, Animation);
+		float FrameAlpha;
 
 		FAnimationMetaData_RenderThread_Lf& RenderData = Runtime.AnimationMetaData_RenderThread[AnimIdx];
+		
+		AddAnimationToLibraryChunked(Library, ThreadContext->CriticalSection, Animation.CPUAnimationIndex_0,
+		                             RenderData.GPUAnimationIndex_0, Animation.CPUAnimationIndex_1, RenderData.GPUAnimationIndex_1, FrameAlpha, Runtime, Animation);
+		
+		RenderData.FrameAlpha = FrameAlpha * 0x7FFF;
 
-		RenderData.GPUAnimationIndex_0 = GPUPoses;
-
-		Animation.CPUAnimationIndex_0 = CPUPoses;
+		Animation.FrameAlpha = FrameAlpha;
 	}
 
 	uint16 NumAnimationsPostRemove = Runtime.AnimationMetaData.Num();
@@ -2993,10 +3007,10 @@ FTurboSequence_TransposeMatrix_Lf FTurboSequence_Utility_Lf::GetBoneTransformFro
 
 void FTurboSequence_Utility_Lf::GetBoneTransformFromAnimationSafe(FMatrix& OutAtom,
                                                                   const FAnimationMetaData_Lf& Animation,
+                                                                  int32 FrameIndex,
                                                                   uint16 SkeletonBoneIndex,
                                                                   const TObjectPtr<UTurboSequence_MeshAsset_Lf> Asset,
-                                                                  const FSkinnedMeshGlobalLibrary_Lf& Library,
-                                                                  const FReferenceSkeleton& ReferenceSkeleton)
+                                                                  const FSkinnedMeshGlobalLibrary_Lf& Library, const FReferenceSkeleton& ReferenceSkeleton)
 {
 	//OutAtom = FMatrix::Identity;
 	if (IsValid(Animation.Animation))
@@ -3005,14 +3019,14 @@ void FTurboSequence_Utility_Lf::GetBoneTransformFromAnimationSafe(FMatrix& OutAt
 
 		const FReferenceSkeleton& AnimationSkeleton = Animation.Animation->GetSkeleton()->GetReferenceSkeleton();
 
-		if (LibraryData.AnimPoses.Contains(Animation.CPUAnimationIndex_0))
+		if (LibraryData.AnimPoses.Contains(FrameIndex))
 		{
 			const FTurboSequence_TransposeMatrix_Lf& Matrix = GetBoneTransformFromLocalPoses(
 				SkeletonBoneIndex, LibraryData, ReferenceSkeleton,
 				AnimationSkeleton,
-				LibraryData.AnimPoses[Animation.CPUAnimationIndex_0].Pose,
+				LibraryData.AnimPoses[FrameIndex].Pose,
 				Animation.Animation);
-
+			
 			for (uint8 M = GET0_NUMBER; M < GET3_NUMBER; ++M)
 			{
 				OutAtom.M[GET0_NUMBER][M] = Matrix.Colum[M].X;
@@ -3094,32 +3108,41 @@ FTransform FTurboSequence_Utility_Lf::BendBoneFromAnimations(uint16 BoneIndex, c
 			continue;
 		}
 
-		FMatrix BoneSpaceAtom = FMatrix::Identity;
+		FMatrix BoneSpaceAtom0 = FMatrix::Identity;
+		FMatrix BoneSpaceAtom1 = FMatrix::Identity;
 
 		// Since we get the data directly from the GPU Collection Data we can likely ignore the root state,
 		// the correct root bone data already baked into the collection .
-		GetBoneTransformFromAnimationSafe(BoneSpaceAtom, Animation, BoneIndex, Runtime.DataAsset, Library,
-		                                  ReferenceSkeleton);
+		GetBoneTransformFromAnimationSafe(BoneSpaceAtom0, Animation, Animation.CPUAnimationIndex_0, BoneIndex, Runtime.DataAsset,
+		                                  Library, ReferenceSkeleton);
 
-		const FTransform& Atom = FTransform(BoneSpaceAtom);
+		GetBoneTransformFromAnimationSafe(BoneSpaceAtom1, Animation, Animation.CPUAnimationIndex_1, BoneIndex, Runtime.DataAsset,
+										  Library, ReferenceSkeleton);
 
+		const FTransform& Atom0 = FTransform(BoneSpaceAtom0);
+		const FTransform& Atom1 = FTransform(BoneSpaceAtom1);
+		
+		FVector ScaleInterpolated = FMath::Lerp(Atom0.GetScale3D(), Atom1.GetScale3D(),Animation.FrameAlpha );
+		FVector TranslationInterpolated = FMath::Lerp(Atom0.GetTranslation(), Atom1.GetTranslation(), Animation.FrameAlpha);
+		FQuat RotationInterpolated = FQuat::Slerp(Atom0.GetRotation(), Atom1.GetRotation(),Animation.FrameAlpha);
+		
 		if (!bFoundFirstAnimation)
 		{
 			bFoundFirstAnimation = true;
-			OutAtom.SetScale3D(Atom.GetScale3D() * Scalar);
-			OutAtom.SetTranslation(Atom.GetTranslation() * Scalar);
+			OutAtom.SetScale3D(ScaleInterpolated * Scalar);
+			OutAtom.SetTranslation(TranslationInterpolated * Scalar);
 			// float RotationW = RotationWeight;
 			// FullRotationWeight += RotationW;
 			// if (FullRotationWeight > GET1_NUMBER)
 			// {
 			// 	RotationW -= FMath::Abs(1.0f - FullRotationWeight);
 			// }
-			OutAtom.SetRotation(Atom.GetRotation() * FTurboSequence_Helper_Lf::Clamp01(Scalar));
+			OutAtom.SetRotation(RotationInterpolated * FTurboSequence_Helper_Lf::Clamp01(Scalar));
 		}
 		else
 		{
-			OutAtom.SetScale3D(OutAtom.GetScale3D() + Atom.GetScale3D() * Scalar);
-			OutAtom.SetTranslation(OutAtom.GetTranslation() + Atom.GetTranslation() * Scalar);
+			OutAtom.SetScale3D(OutAtom.GetScale3D() + ScaleInterpolated * Scalar);
+			OutAtom.SetTranslation(OutAtom.GetTranslation() + TranslationInterpolated * Scalar);
 			// float RotationW = RotationWeight;
 			// FullRotationWeight += RotationW;
 			// if (FullRotationWeight > GET1_NUMBER)
@@ -3127,7 +3150,7 @@ FTransform FTurboSequence_Utility_Lf::BendBoneFromAnimations(uint16 BoneIndex, c
 			// 	RotationW -= FMath::Abs(1.0f - FullRotationWeight);
 			// }
 			OutAtom.SetRotation(FTurboSequence_Helper_Lf::Scale_Quaternion(
-				OutAtom.GetRotation(), Atom.GetRotation(),
+				OutAtom.GetRotation(), RotationInterpolated,
 				FTurboSequence_Helper_Lf::Clamp01(Scalar)).GetNormalized());
 		}
 	}

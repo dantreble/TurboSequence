@@ -404,24 +404,54 @@ public:
 	 */
 	static bool IsValidBufferIndex(const FSkinnedMeshGlobalLibrary_RenderThread_Lf& Library,
 	                               int32 Index);
+	
+	/**
+	 * Adds a pose to the chunked library with multi-threading support.
+	 *
+	 * @param CPUIndex The cpu index of the pose to add.
+	 * @param Library The skinned mesh global library to add the animation.
+	 * @param CriticalSection The critical section for multi-threading.
+	 * @param Animation The metadata of the animation to add.
+	 * @param LibraryAnimData 
+	 * @param ReferenceSkeleton The ReferenceSkeleton of the animation to add.
+	 * @param AnimationSkeleton The AnimationSkeleton of the animation to add.
+	 *
+	 * @return Success.
+	 *
+	 * @throws None
+	 */
+	
+	static int32 AddAnimationPoseToLibraryChunked(int32 CPUIndex,
+	                                              FSkinnedMeshGlobalLibrary_Lf& Library,
+	                                              FCriticalSection& CriticalSection,
+	                                              const FAnimationMetaData_Lf& Animation,
+	                                              FAnimationLibraryData_Lf& LibraryAnimData,
+	                                              const FReferenceSkeleton& ReferenceSkeleton,
+	                                              const FReferenceSkeleton& AnimationSkeleton);
 
 	/**
 	 * Adds an animation to the chunked library with multi-threading support.
 	 *
 	 * @param Library The skinned mesh global library to add the animation.
 	 * @param CriticalSection The critical section for multi-threading.
-	 * @param CPUIndices The indices for the CPU.
+	 * @param CPUIndex0 The index for the CPU Frame before.
+	 * @param GPUIndex0 The index for the GPU Frame before.
+	 * @param CPUIndex1 The index for the CPU Frame after.
+	 * @param GPUIndex1 The index for the GPU Frame after.
+	 * @param FrameAlpha The interpolation percentage between the frme before and after 
 	 * @param Runtime The skinned mesh runtime data for the animation.
 	 * @param Animation The metadata of the animation to add.
 	 *
-	 * @return The index of the added animation.
+	 * @return Success.
 	 *
 	 * @throws None
 	 */
-	static int32 AddAnimationToLibraryChunked(FSkinnedMeshGlobalLibrary_Lf& Library,
-	                                          FCriticalSection& CriticalSection, int32& CPUIndices,
-	                                          const FSkinnedMeshRuntime_Lf& Runtime,
-	                                          const FAnimationMetaData_Lf& Animation);
+	static bool AddAnimationToLibraryChunked(FSkinnedMeshGlobalLibrary_Lf& Library,
+	                                         FCriticalSection& CriticalSection, int32& CPUIndex0,
+	                                         int32& GPUIndex0,
+	                                         int32& CPUIndex1, int32& GPUIndex1, float& FrameAlpha,
+	                                         const FSkinnedMeshRuntime_Lf& Runtime,
+	                                         const FAnimationMetaData_Lf& Animation);
 	/**
  * Customizes a skinned mesh by applying a target mesh, target materials, and other properties.
  *
@@ -1063,9 +1093,9 @@ public:
 * @throws None
 */
 	static void GetBoneTransformFromAnimationSafe(
-		FMatrix& OutAtom, const FAnimationMetaData_Lf& Animation, uint16 SkeletonBoneIndex,
-		const TObjectPtr<UTurboSequence_MeshAsset_Lf> Asset, const FSkinnedMeshGlobalLibrary_Lf& Library,
-		const FReferenceSkeleton& ReferenceSkeleton);
+		FMatrix& OutAtom, const FAnimationMetaData_Lf& Animation, int32 FrameIndex,
+		uint16 SkeletonBoneIndex, const TObjectPtr<UTurboSequence_MeshAsset_Lf> Asset,
+		const FSkinnedMeshGlobalLibrary_Lf& Library, const FReferenceSkeleton& ReferenceSkeleton);
 
 	/**
 * Calculates the bone transformation for a given bone index by blending the animations in the runtime.
