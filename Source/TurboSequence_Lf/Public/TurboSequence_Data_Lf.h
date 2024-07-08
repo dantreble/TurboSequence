@@ -87,7 +87,7 @@ struct TURBOSEQUENCE_LF_API FRenderData_Lf
 
 	// ID
 	TMap<int32, int32> InstanceMap; // < MeshID | Renderer Instance Index >
-	TArray<FVector2f> ParticleIDs; // < Unique ID | Index > -> Used internally for Niagara finding the Index
+	TArray<int32> ParticleIDs; // < Unique ID > -> Used internally for Niagara finding the Index
 
 	// Transform
 	TArray<FVector> ParticlePositions;
@@ -105,8 +105,14 @@ struct TURBOSEQUENCE_LF_API FRenderData_Lf
 	FVector MinBounds = FVector::ZeroVector;
 	FVector MaxBounds = FVector::ZeroVector;
 
-	// We only need update the data when it's actually Dirty
-	bool bCollectionDirty = false;
+	bool bChangedCollectionSizeThisFrame = false;
+	bool bChangedCollectionSizePreviousFrame = false;
+	bool bChangedPositionCollectionThisFrame = false;
+	bool bChangedRotationCollectionThisFrame = false;
+	bool bChangedScaleCollectionThisFrame = false;
+	bool bChangedLodCollectionThisFrame = false;
+	bool bChangedCustomDataCollectionThisFrame = false;
+
 
 private:
 	FName EmitterName;
