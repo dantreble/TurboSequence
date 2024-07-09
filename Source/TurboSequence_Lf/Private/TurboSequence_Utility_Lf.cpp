@@ -1532,23 +1532,49 @@ void FTurboSequence_Utility_Lf::AddRenderInstance(FSkinnedMeshReference_Lf& Refe
 
 	FRenderData_Lf& RenderData = Reference.RenderData[Runtime.MaterialsHash];
 
-	const int32 InstanceIndex = RenderData.InstanceMap.Num();
+	const bool bReuse = RenderData.FreeList.Num() > 0;  
+	
+	const int32 InstanceIndex = bReuse ? RenderData.FreeList.Pop() : RenderData.InstanceMap.Num();
+
 	RenderData.InstanceMap.Add(Runtime.GetMeshID(), InstanceIndex);
-	RenderData.ParticleIDs.Add(RenderData.GetUniqueID());
+	
+	if(bReuse)
+	{
+		RenderData.ParticleIDs[InstanceIndex] = RenderData.GetUniqueID();
 
-	RenderData.ParticlePositions.Add(WorldSpaceTransform.GetLocation());
-	RenderData.ParticleRotations.Add(
+		RenderData.ParticlePositions[InstanceIndex] = WorldSpaceTransform.GetLocation();
+		RenderData.ParticleRotations[InstanceIndex] = FTurboSequence_Helper_Lf::ConvertQuaternionToVector4F(WorldSpaceTransform.GetRotation());
+		RenderData.ParticleScales[InstanceIndex] = FTurboSequence_Helper_Lf::ConvertVectorToVector3F(WorldSpaceTransform.GetScale3D());
+
+		RenderData.ParticleLevelOfDetails[InstanceIndex] = GET0_NUMBER;
+		
+		RenderData.Alive[InstanceIndex] = true;
+
+		for(int i = 0; i < FTurboSequence_Helper_Lf::NumInstanceCustomData; ++i)
+		{
+			RenderData.ParticleCustomData[ InstanceIndex * FTurboSequence_Helper_Lf::NumInstanceCustomData + i] = float();
+		}
+	}
+	else
+	{
+		RenderData.ParticleIDs.Add(RenderData.GetUniqueID());
+
+		RenderData.ParticlePositions.Add(WorldSpaceTransform.GetLocation());
+		RenderData.ParticleRotations.Add(
 		FTurboSequence_Helper_Lf::ConvertQuaternionToVector4F(WorldSpaceTransform.GetRotation()));
-	RenderData.ParticleScales.Add(
+		RenderData.ParticleScales.Add(
 		FTurboSequence_Helper_Lf::ConvertVectorToVector3F(WorldSpaceTransform.GetScale3D()));
+		
+		RenderData.ParticleLevelOfDetails.Add(GET0_NUMBER);
 
-	RenderData.ParticleLevelOfDetails.Add(GET0_NUMBER);
-
-	RenderData.ParticleCustomData.AddDefaulted(FTurboSequence_Helper_Lf::NumInstanceCustomData);
-
-	RenderData.IncrementUniqueID(); // Use the same ID as Niagara
+		RenderData.Alive.Add(true);
+		
+		RenderData.ParticleCustomData.AddDefaulted(FTurboSequence_Helper_Lf::NumInstanceCustomData);
+	}
 
 	RenderData.bChangedCollectionSizeThisFrame = true;
+	
+	RenderData.IncrementUniqueID(); // Use the same ID as Niagara
 }
 
 void FTurboSequence_Utility_Lf::CleanNiagaraRenderer(
@@ -1574,29 +1600,9 @@ void FTurboSequence_Utility_Lf::RemoveRenderInstance(FSkinnedMeshReference_Lf& R
 
 	const int32 InstanceIndex = RenderData.InstanceMap[Runtime.GetMeshID()];
 	RenderData.InstanceMap.Remove(Runtime.GetMeshID());
-	for (TTuple<int32, int32>& Instance : RenderData.InstanceMap)
-	{
-		if (Instance.Value > InstanceIndex)
-		{
-			Instance.Value--;
-		}
-	}
 
-	RenderData.ParticlePositions.RemoveAt(InstanceIndex);
-	RenderData.ParticleRotations.RemoveAt(InstanceIndex);
-	RenderData.ParticleScales.RemoveAt(InstanceIndex);
-	RenderData.ParticleLevelOfDetails.RemoveAt(InstanceIndex);
-
-	// Removing IDs happens on the removal of this Array in Tick()
-	RenderData.ParticlesToRemove.Add(InstanceIndex);
-
-	for (int16 i = FTurboSequence_Helper_Lf::NumInstanceCustomData - GET1_NUMBER; i >= GET0_NUMBER; --i)
-	{
-		int32 CustomDataIndex = InstanceIndex * FTurboSequence_Helper_Lf::NumInstanceCustomData + i;
-		RenderData.ParticleCustomData.RemoveAt(CustomDataIndex);
-	}
-
-	RenderData.bChangedCollectionSizeThisFrame = true;
+	RenderData.FreeList.Add(InstanceIndex);
+	RenderData.Alive[InstanceIndex] = false;
 }
 
 void FTurboSequence_Utility_Lf::UpdateRenderInstanceLod_Concurrent(FSkinnedMeshReference_Lf& Reference,
@@ -1608,8 +1614,7 @@ void FTurboSequence_Utility_Lf::UpdateRenderInstanceLod_Concurrent(FSkinnedMeshR
 
 	const int32 InstanceIndex = RenderData.InstanceMap[Runtime.GetMeshID()];
 
-	const uint8 Lod = bIsVisible * LodElement.GPUMeshIndex + !bIsVisible *
-		FTurboSequence_Helper_Lf::NotVisibleMeshIndex;
+	const uint8 Lod = bIsVisible && RenderData.Alive[InstanceIndex] ? LodElement.GPUMeshIndex : FTurboSequence_Helper_Lf::NotVisibleMeshIndex;
 	if (Lod != RenderData.ParticleLevelOfDetails[InstanceIndex])
 	{
 		RenderData.bChangedLodCollectionThisFrame = true;
