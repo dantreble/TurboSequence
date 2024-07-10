@@ -130,8 +130,7 @@ public:
 		meta=(ReturnDisplayName="Success", Keywords="Turbo, Sequence, TS, Remove, Destroy, Instance, Despawn"))
 	static bool RemoveSkinnedMeshInstance_GameThread(const FTurboSequence_MinimalMeshData_Lf& MeshData,
 	                                                 UWorld* InWorld);
-
-protected:
+	
 	// NODE: Please use the versions with FTurboSequence_MeshSpawnData_Lf& FromSpawnData
 	static int32 AddSkinnedMeshInstance_GameThread(const TObjectPtr<UTurboSequence_MeshAsset_Lf>& FromAsset,
 	                                               const FTransform& SpawnTransform,
@@ -142,8 +141,7 @@ protected:
 		                                               nullptr);
 
 	static bool RemoveSkinnedMeshInstance_GameThread(int32 MeshID, const TObjectPtr<UWorld> InWorld);
-
-public:
+	
 	/**
 	 * Solves all Meshes of one Update Group
 	 * @param DeltaTime The Delta Time because the function should run every frame or every Update Group Tick

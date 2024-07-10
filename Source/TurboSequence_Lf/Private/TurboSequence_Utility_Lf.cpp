@@ -1597,6 +1597,8 @@ void FTurboSequence_Utility_Lf::RemoveRenderInstance(FSkinnedMeshReference_Lf& R
 
 	RenderData.FreeList.Add(InstanceIndex);
 	RenderData.Alive[InstanceIndex] = false;
+	RenderData.ParticleLevelOfDetails[InstanceIndex] = FTurboSequence_Helper_Lf::NotVisibleMeshIndex;
+	RenderData.bChangedLodCollectionThisFrame = true;
 }
 
 void FTurboSequence_Utility_Lf::UpdateRenderInstanceLod_Concurrent(FSkinnedMeshReference_Lf& Reference,
