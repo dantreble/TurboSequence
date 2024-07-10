@@ -1345,16 +1345,6 @@ void ATurboSequence_Manager_Lf::AddInstanceToUpdateGroup_RawID_Concurrent(const 
 		{
 			Group.RawIDData.Add(MeshID, Group.RawIDData.Num());
 			Group.RawIDs.Add(MeshID);
-			if (!Group.MeshIDToMinimal.Contains(GlobalLibrary.MeshIDToMinimalData[MeshID]))
-			{
-				Group.MeshIDToMinimal.Add(GlobalLibrary.MeshIDToMinimalData[MeshID],
-				                          FIntVector2(GET1_NUMBER, Group.MeshIDToMinimal.Num()));
-				Group.RawMinimalData.Add(GlobalLibrary.MeshIDToMinimalData[MeshID]);
-			}
-			else
-			{
-				Group.MeshIDToMinimal[GlobalLibrary.MeshIDToMinimalData[MeshID]].X++;
-			}
 		}
 	}
 }
@@ -1413,27 +1403,6 @@ void ATurboSequence_Manager_Lf::RemoveInstanceFromUpdateGroup_RawID_Concurrent(c
 					if (Data.Value > RawIndexToRemove)
 					{
 						Data.Value--;
-					}
-				}
-
-				if (Group.MeshIDToMinimal.Contains(GlobalLibrary.MeshIDToMinimalData[MeshID]))
-				{
-					Group.MeshIDToMinimal[GlobalLibrary.MeshIDToMinimalData[MeshID]].X--;
-					if (Group.MeshIDToMinimal[GlobalLibrary.MeshIDToMinimalData[MeshID]].X <= GET0_NUMBER)
-					{
-						const int32 MinimalIndexToRemove = Group.MeshIDToMinimal[GlobalLibrary.MeshIDToMinimalData[
-							MeshID]].Y;
-
-						Group.MeshIDToMinimal.Remove(GlobalLibrary.MeshIDToMinimalData[MeshID]);
-						Group.RawMinimalData.RemoveAt(MinimalIndexToRemove);
-
-						for (TTuple<FTurboSequence_MinimalMeshData_Lf, FIntVector2>& Data : Group.MeshIDToMinimal)
-						{
-							if (Data.Value.Y > MinimalIndexToRemove)
-							{
-								Data.Value.Y--;
-							}
-						}
 					}
 				}
 			}
