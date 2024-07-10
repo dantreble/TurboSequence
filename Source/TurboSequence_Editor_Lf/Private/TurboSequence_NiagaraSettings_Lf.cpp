@@ -74,15 +74,7 @@ void UTurboSequence_NiagaraSettings_Lf::PostEditChangeProperty(FPropertyChangedE
 			bEditedData = true;
 			FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraMaterialObject = NameNiagaraMaterialObject;
 		}
-
-		if (NameNiagaraParticleIDs != FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraParticleIDMap.
-			ToString())
-		{
-			bEditedData = true;
-			FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraParticleIDMap = FName(
-				NameNiagaraParticleIDs);
-		}
-
+		
 		if (NameNiagaraParticleLocations != FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraParticleLocations.
 			ToString())
 		{
@@ -113,14 +105,7 @@ void UTurboSequence_NiagaraSettings_Lf::PostEditChangeProperty(FPropertyChangedE
 			FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraLevelOfDetailIndex = FName(
 				NameNiagaraLevelOfDetailIndex);
 		}
-
-		if (NameNiagaraParticleRemove != FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraParticleRemove.
-			ToString())
-		{
-			bEditedData = true;
-			FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraParticleRemove = FName(NameNiagaraParticleRemove);
-		}
-
+		
 		if (NameNiagaraCustomData != FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraCustomData.ToString())
 		{
 			bEditedData = true;

@@ -32,10 +32,7 @@ public:
 
 	UPROPERTY(EditAnywhere)
 	FName NameNiagaraParticleLocations = FName("User.Particle_Position");
-
-	UPROPERTY(EditAnywhere)
-	FName NameNiagaraParticleIDMap = FName("User.Particle_ID_To_Index");
-
+	
 	UPROPERTY(EditAnywhere)
 	FName NameNiagaraParticleRotations = FName("User.Particle_Rotation");
 

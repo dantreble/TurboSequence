@@ -77,31 +77,7 @@ void ATurboSequence_Manager_Lf::Tick(float DeltaTime)
 		{
 			const TObjectPtr<UNiagaraComponent> NiagaraComponent = Instance->NiagaraComponents[Asset].
 				NiagaraRenderer[RenderData.Key].NiagaraRenderer;
-
-			if (RenderData.Value.bChangedCollectionSizeThisFrame)
-			{
-				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayInt32(
-						NiagaraComponent, RenderData.Value.GetParticleIDName(), RenderData.Value.ParticleIDs);
-				RenderData.Value.bChangedCollectionSizePreviousFrame = true;
-				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayInt32(
-					NiagaraComponent, RenderData.Value.GetParticleRemoveName(), RenderData.Value.ParticlesToRemove);
-			}
-
-			NiagaraComponent->SetVariableBool("User.CollectionChangedThisFrame",
-											  RenderData.Value.bChangedCollectionSizeThisFrame || RenderData.Value.
-											  bChangedCollectionSizePreviousFrame);
-
-			if (RenderData.Value.bChangedCollectionSizePreviousFrame && !RenderData.Value.
-				bChangedCollectionSizeThisFrame)
-			{
-				RenderData.Value.bChangedCollectionSizePreviousFrame = false;
-				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayInt32(
-					NiagaraComponent, RenderData.Value.GetParticleIDName(), RenderData.Value.ParticleIDs);
-
-				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayInt32(
-					NiagaraComponent, RenderData.Value.GetParticleRemoveName(), RenderData.Value.ParticlesToRemove);
-			}
-
+			
 			if (RenderData.Value.bChangedLodCollectionThisFrame || RenderData.Value.bChangedCollectionSizeThisFrame)
 			{
 				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayUInt8(
@@ -142,15 +118,6 @@ void ATurboSequence_Manager_Lf::Tick(float DeltaTime)
 			RenderData.Value.bChangedScaleCollectionThisFrame = false;
 
 			RenderData.Value.bChangedCollectionSizeThisFrame = false;
-			// ParticleIDs needs to have the last frame valid Indices
-			if (RenderData.Value.ParticlesToRemove.Num())
-			{
-				for (const int32 ParticleIndexToRemove : RenderData.Value.ParticlesToRemove)
-				{
-					RenderData.Value.ParticleIDs.RemoveAt(ParticleIndexToRemove);
-				}
-			}
-			RenderData.Value.ParticlesToRemove.Empty();
 
 			const FBox RendererBounds = FBox(RenderData.Value.MinBounds, RenderData.Value.MaxBounds);
 			NiagaraComponent->SetEmitterFixedBounds(RenderData.Value.GetEmitterName(), RendererBounds);

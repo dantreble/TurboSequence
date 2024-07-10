@@ -32,15 +32,13 @@ uint32 FTurboSequence_Utility_Lf::CreateRenderer(FSkinnedMeshReference_Lf& Refer
 	// Create the Render Data first
 
 	FRenderData_Lf RenderData = FRenderData_Lf(GlobalData->NameNiagaraEmitter,
-	                                           GlobalData->NameNiagaraParticleIDMap,
 	                                           GlobalData->NameNiagaraParticleLocations,
 	                                           GlobalData->NameNiagaraParticleRotations,
 	                                           GlobalData->NameNiagaraParticleScales,
 	                                           GlobalData->NameNiagaraMeshObject,
 	                                           GlobalData->NameNiagaraMaterialObject,
 	                                           GlobalData->NameNiagaraLevelOfDetailIndex,
-	                                           GlobalData->NameNiagaraCustomData,
-	                                           GlobalData->NameNiagaraParticleRemove);
+	                                           GlobalData->NameNiagaraCustomData);
 
 	RenderData.Materials = Materials;
 	Reference.RenderData.Add(MaterialsHash, RenderData);
@@ -1540,8 +1538,6 @@ void FTurboSequence_Utility_Lf::AddRenderInstance(FSkinnedMeshReference_Lf& Refe
 	
 	if(bReuse)
 	{
-		RenderData.ParticleIDs[InstanceIndex] = RenderData.GetUniqueID();
-
 		RenderData.ParticlePositions[InstanceIndex] = WorldSpaceTransform.GetLocation();
 		RenderData.ParticleRotations[InstanceIndex] = FTurboSequence_Helper_Lf::ConvertQuaternionToVector4F(WorldSpaceTransform.GetRotation());
 		RenderData.ParticleScales[InstanceIndex] = FTurboSequence_Helper_Lf::ConvertVectorToVector3F(WorldSpaceTransform.GetScale3D());
@@ -1557,8 +1553,6 @@ void FTurboSequence_Utility_Lf::AddRenderInstance(FSkinnedMeshReference_Lf& Refe
 	}
 	else
 	{
-		RenderData.ParticleIDs.Add(RenderData.GetUniqueID());
-
 		RenderData.ParticlePositions.Add(WorldSpaceTransform.GetLocation());
 		RenderData.ParticleRotations.Add(
 		FTurboSequence_Helper_Lf::ConvertQuaternionToVector4F(WorldSpaceTransform.GetRotation()));

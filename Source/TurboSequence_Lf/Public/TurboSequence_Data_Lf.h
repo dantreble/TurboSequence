@@ -55,19 +55,17 @@ struct TURBOSEQUENCE_LF_API FRenderData_Lf
 {
 	GENERATED_BODY()
 
-	explicit FRenderData_Lf(const FName& EmitterName, const FName& ParticleIDName, const FName& PositionName, const FName& RotationName,
+	explicit FRenderData_Lf(const FName& EmitterName, const FName& PositionName, const FName& RotationName,
 	                        const FName& ScaleName, const FString& MeshName, const FString& MaterialsName,
-	                        const FName& LodName, const FName& CustomDataName, const FName& ParticleRemoveName)
+	                        const FName& LodName, const FName& CustomDataName)
 		: EmitterName(EmitterName),
-		  IDName(ParticleIDName),
 		  PositionName(PositionName),
 		  RotationName(RotationName),
 		  ScaleName(ScaleName),
 		  MeshName(MeshName),
 		  MaterialsName(MaterialsName),
 		  LodName(LodName),
-		  CustomDataName(CustomDataName),
-		  ParticleRemoveName(ParticleRemoveName)
+		  CustomDataName(CustomDataName)
 	{
 	}
 
@@ -87,7 +85,6 @@ struct TURBOSEQUENCE_LF_API FRenderData_Lf
 
 	// ID
 	TMap<int32, int32> InstanceMap; // < MeshID | Renderer Instance Index >
-	TArray<int32> ParticleIDs; // < Unique ID > -> Used internally for Niagara finding the Index
 
 	TArray<int32> FreeList;
 	TArray<bool> Alive;
@@ -99,7 +96,6 @@ struct TURBOSEQUENCE_LF_API FRenderData_Lf
 
 	// Culling and Visibility
 	TArray<uint8> ParticleLevelOfDetails; // Index 32 -> Not Visible
-	TArray<int32> ParticlesToRemove;
 
 	// Custom Data
 	TArray<float> ParticleCustomData;
@@ -119,7 +115,6 @@ struct TURBOSEQUENCE_LF_API FRenderData_Lf
 
 private:
 	FName EmitterName;
-	FName IDName;
 	FName PositionName;
 	FName RotationName;
 	FName ScaleName;
@@ -127,7 +122,6 @@ private:
 	FString MaterialsName;
 	FName LodName;
 	FName CustomDataName;
-	FName ParticleRemoveName;
 
 	int32 UniqueID = 0;
 
@@ -150,11 +144,6 @@ public:
 	FORCEINLINE FName& GetPositionName()
 	{
 		return PositionName;
-	}
-
-	FORCEINLINE FName& GetParticleIDName()
-	{
-		return IDName;
 	}
 
 	FORCEINLINE FName& GetRotationName()
@@ -185,11 +174,6 @@ public:
 	FORCEINLINE FName& GetCustomDataName()
 	{
 		return CustomDataName;
-	}
-
-	FORCEINLINE FName& GetParticleRemoveName()
-	{
-		return ParticleRemoveName;
 	}
 };
 
