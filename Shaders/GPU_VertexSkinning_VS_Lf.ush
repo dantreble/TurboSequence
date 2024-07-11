@@ -15,10 +15,11 @@ struct TurboSequenceVSFunctions_Lf
 	}
 	
 	void VertexSkin(inout float3 FinalCurrentBlendPosition, inout float3 FinalPreviousBlendPosition,
+					inout float3 Normal, inout float3 Tangent,
 	                in Texture2DArray<float4> TransformTexture_Current,
 	                in Texture2DArray<float4> TransformTexture_Previous, in Texture2DArray<float4> SkinWeightTexture,
 	                in int TransformTextureOffset, in int VertexBaseIndex, in int Settings0_W, in int4 Settings1,
-	                in int2 MaterialSettings0, in float3 VertexPosition, in bool bEarlyOutInfluences)
+	                in int2 MaterialSettings0, in float3 VertexPosition,  in float3 SourceNormal,  in float3 SourceTangent,  in bool bEarlyOutInfluences)
 	{
 		int SkinTexPow = MaterialSettings0.x * MaterialSettings0.y; //Settings1.x * Settings1.y;
 		int TransformTexPow = Settings1.z * Settings1.w;
@@ -60,24 +61,33 @@ struct TurboSequenceVSFunctions_Lf
 				);
 
 				float Weight = (float)Weights[W] / (float)0xFF;
-				FinalCurrentBlendPosition += (mul(BoneMatrix_Current, float4(VertexPosition, 1.0f)).xyz -
-					VertexPosition) * Weight;
-				FinalPreviousBlendPosition += (mul(BoneMatrix_Previous, float4(VertexPosition, 1.0f)).xyz -
-					VertexPosition) * Weight;
+				FinalCurrentBlendPosition += mul(BoneMatrix_Current, float4(VertexPosition, 1.0f)).xyz * Weight;
+				Normal += mul(BoneMatrix_Current, float4(SourceNormal, 0.0f)).xyz * Weight;
+				Tangent += mul(BoneMatrix_Current, float4(SourceTangent, 0.0f)).xyz * Weight;
+				
+				FinalPreviousBlendPosition += mul(BoneMatrix_Previous, float4(VertexPosition, 1.0f)).xyz * Weight;
+
 			}
 		}
 	}
 };
 
 float3 FinalCurrentFrameBlendPosition = float3(0, 0, 0);
+FinalNormal = float3(0, 0, 0);
+FinalTangent = float3(0, 0, 0);
+FinalPreviousBlendPosition = float3(0, 0, 0);
 
 TurboSequenceVSFunctions_Lf f;
 
 	#include "/TurboSequence_Shaders/GPU_TS_VertexSkinning.ush"
 
-	f.VertexSkin(FinalCurrentFrameBlendPosition, FinalPreviousBlendPosition, TransformTexture_CurrentFrame,
+	f.VertexSkin(FinalCurrentFrameBlendPosition, FinalPreviousBlendPosition, FinalNormal, FinalTangent, TransformTexture_CurrentFrame,
 	             TransformTexture_PreviousFrame, SkinWeightTexture, TTextureOffset, VertexBaseIndex, Settings0.w,
-	             Settings1, MaterialSettings0, VertexPosition, bEarlyOutInfluences);
+	             Settings1, MaterialSettings0, VertexPosition, Normal, Tangent, bEarlyOutInfluences);
+
+	//WPO wants a delta
+	FinalCurrentFrameBlendPosition = FinalCurrentFrameBlendPosition - VertexPosition;
+	FinalPreviousBlendPosition = FinalPreviousBlendPosition - VertexPosition;
 }
 
 return FinalCurrentFrameBlendPosition;
