@@ -96,7 +96,7 @@ struct TURBOSEQUENCE_LF_API FMeshItem_Lf
  * 
  */
 UCLASS(BlueprintType)
-class TURBOSEQUENCE_LF_API UTurboSequence_MeshAsset_Lf : public UObject
+class TURBOSEQUENCE_LF_API UTurboSequence_MeshAsset_Lf : public UPrimaryDataAsset
 {
 	GENERATED_BODY()
 

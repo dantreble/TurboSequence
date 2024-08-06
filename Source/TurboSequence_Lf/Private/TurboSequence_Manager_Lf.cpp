@@ -2159,6 +2159,39 @@ bool ATurboSequence_Manager_Lf::GetSocketTransform_RawID_Concurrent(FTransform& 
 	return false;
 }
 
+bool ATurboSequence_Manager_Lf::GetBoneTransforms_RawID_Concurrent(TArray<FTransform> &OutBoneTransforms, int32 MeshID,
+																	const TArray<FName> &BoneNames, float AnimationDeltaTime,
+																	const EBoneSpaces::Type Space)
+{
+	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
+	{
+		return false;
+	}
+	FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
+	if (!IsValid(Runtime.DataAsset))
+	{
+		return false;
+	}
+	const FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
+
+	if (IsValid(Runtime.DataAsset) && IsValid(Runtime.DataAsset->ReferenceMeshNative))
+	{
+		int64 CurrentFrameCount = UKismetSystemLibrary::GetFrameCount();
+		const TObjectPtr<UTurboSequence_ThreadContext_Lf> ThreadContext = Instance->GetThreadContext();
+
+		FTurboSequence_Utility_Lf::GetBoneTransforms(OutBoneTransforms, BoneNames, Runtime, Reference,
+													  GlobalLibrary, GlobalLibrary_RenderThread, Space,
+													  AnimationDeltaTime, CurrentFrameCount,
+													  ThreadContext);
+
+		return true;
+	}
+
+	return false;
+}
+
+
+
 bool ATurboSequence_Manager_Lf::GetIsMeshVisibleInCameraFrustum_Concurrent(
 	const FTurboSequence_MinimalMeshData_Lf& MeshData)
 {

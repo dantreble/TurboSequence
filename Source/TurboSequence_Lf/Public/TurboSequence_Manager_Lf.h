@@ -596,6 +596,11 @@ public:
 	                                                float AnimationDeltaTime,
 	                                                const EBoneSpaces::Type Space = EBoneSpaces::WorldSpace);
 
+	static bool GetBoneTransforms_RawID_Concurrent(TArray<FTransform> &OutBoneTransforms, int32 MeshID,
+													const TArray<FName> &BoneNames, float AnimationDeltaTime,
+													const EBoneSpaces::Type Space = EBoneSpaces::WorldSpace);
+
+	
 	/**
 	 * Detects if the Mesh is visible this frame in the Camera Frustum
 	 * @param MeshData The Mesh ID

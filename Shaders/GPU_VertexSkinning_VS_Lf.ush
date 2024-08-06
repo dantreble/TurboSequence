@@ -60,10 +60,8 @@ struct TurboSequenceVSFunctions_Lf
 				);
 
 				float Weight = (float)Weights[W] / (float)0xFF;
-				FinalCurrentBlendPosition += (mul(BoneMatrix_Current, float4(VertexPosition, 1.0f)).xyz -
-					VertexPosition) * Weight;
-				FinalPreviousBlendPosition += (mul(BoneMatrix_Previous, float4(VertexPosition, 1.0f)).xyz -
-					VertexPosition) * Weight;
+				FinalCurrentBlendPosition += (mul(BoneMatrix_Current, float4(VertexPosition, 1.0f)).xyz) * Weight;
+				FinalPreviousBlendPosition += (mul(BoneMatrix_Previous, float4(VertexPosition, 1.0f)).xyz) * Weight;
 			}
 		}
 	}
@@ -78,6 +76,9 @@ TurboSequenceVSFunctions_Lf f;
 	f.VertexSkin(FinalCurrentFrameBlendPosition, FinalPreviousBlendPosition, TransformTexture_CurrentFrame,
 	             TransformTexture_PreviousFrame, SkinWeightTexture, TTextureOffset, VertexBaseIndex, Settings0.w,
 	             Settings1, MaterialSettings0, VertexPosition, bEarlyOutInfluences);
+	//WPO wants a delta
+	FinalCurrentFrameBlendPosition = FinalCurrentFrameBlendPosition - VertexPosition;
+	FinalPreviousBlendPosition = FinalPreviousBlendPosition - VertexPosition;
 }
 
 return FinalCurrentFrameBlendPosition;

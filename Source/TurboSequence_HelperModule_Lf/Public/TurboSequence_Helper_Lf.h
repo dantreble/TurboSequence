@@ -361,12 +361,10 @@ public:
 	// Example User.Material_0 -> For the first Material, We have max 15 Materials per system
 	inline static const FString NameNiagaraMaterialObject = FString("User.Material_{0}");
 	//inline static const FName NameNiagaraParticleSpawnAmount = FName("User.Particle_Spawn_Amount");
-	inline static const FString NameNiagaraParticleIDs = FString("User.Particle_ID_To_Index");
 	inline static const FString NameNiagaraParticleLocations = FString("User.Particle_Position");
 	inline static const FString NameNiagaraParticleRotations = FString("User.Particle_Rotation");
 	inline static const FString NameNiagaraParticleScales = FString("User.Particle_Scale");
 	// inline static const FName NameNiagaraParticleIndex = FName("User.Particle_Index");
-	inline static const FString NameNiagaraParticleRemove = FString("User.Particle_Remove");
 	inline static const FString NameNiagaraLevelOfDetailIndex = FString("User.LevelOfDetail_Index");
 	inline static const FString NameNiagaraCustomData = FString("User.CustomData");
 
@@ -381,12 +379,7 @@ public:
 		"/Script/Engine.TextureRenderTarget2DArray'/TurboSequence_Lf/Resources/T_TurboSequence_DataTexture_Lf.T_TurboSequence_DataTexture_Lf'");
 
 	static constexpr uint8 NotVisibleMeshIndex = GET13_NUMBER;
-
-	inline static const FName NameMaterialParameterMeshDataTexture = FName("SkinWeight_Texture2DArray");
-	inline static const FName NameMaterialParameterMeshDataTextureSizeX = FName("SkinWeight_TexX");
-	inline static const FName NameMaterialParameterMeshDataTextureSizeY = FName("SkinWeight_TexY");
-
-
+	
 	// -> Licence Start
 	// Copyright Epic Games, Inc. All Rights Reserved.
 	static void GetAnimPoseAtTimeIntervals(const UAnimSequenceBase* AnimationSequenceBase,

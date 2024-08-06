@@ -1130,6 +1130,28 @@ public:
 	                                            const FSkinnedMeshReference_Lf& Reference,
 	                                            float DeltaTime);
 
+
+	/**
+	 * 
+	 * @param OutAtoms 
+	 * @param BoneIndices 
+	 * @param Runtime The skinned mesh runtime data.
+	 * @param Reference The reference data for the skinned mesh.
+ 	 * @param Library The global library of skinned meshes.
+	 * @param Library_RenderThread The render thread library of skinned meshes.
+	 * @param Space The bone space type for the transformation.
+	 * @param AnimationDeltaTime The time elapsed during the animation.
+	 * @param CurrentFrameCount The current frame count of the animation.
+	 * @param ThreadContext The thread context for the skinned mesh.
+	 */
+	static void GetTransforms(TArray<FTransform>& OutAtoms, const TArray<int32>& BoneIndices, FSkinnedMeshRuntime_Lf& Runtime,
+	                          const FSkinnedMeshReference_Lf& Reference,
+	                          FSkinnedMeshGlobalLibrary_Lf& Library,
+	                          FSkinnedMeshGlobalLibrary_RenderThread_Lf& Library_RenderThread,
+	                          const EBoneSpaces::Type Space,
+	                          float AnimationDeltaTime, int32 CurrentFrameCount,
+	                          const TObjectPtr<UTurboSequence_ThreadContext_Lf>& ThreadContext);
+	
 	/**
 * Calculates the IK transform for a specific bone index based on the skinned mesh runtime.
 *
@@ -1237,4 +1259,30 @@ public:
 	                               float AnimationDeltaTime,
 	                               int32 CurrentFrameCount,
 	                               const TObjectPtr<UTurboSequence_ThreadContext_Lf>& ThreadContext);
+
+
+/**
+* Retrieves the transform of a an array of bones in the given skinned mesh runtime.
+*
+* @param OutTransforms 
+* @param BoneNames 
+* @param Runtime The skinned mesh runtime.
+* @param Reference The reference data of the skinned mesh.
+* @param Library The global library of skinned meshes.
+* @param Library_RenderThread The render thread library of skinned meshes.
+* @param Space The bone space type for the transformation.
+* @param AnimationDeltaTime The time elapsed during the animation.
+* @param CurrentFrameCount The current frame count of the animation.
+* @param ThreadContext The thread context for the skinned mesh.
+*
+* @throws None
+*/
+static void GetBoneTransforms(TArray<FTransform>& OutTransforms, TArray<FName> BoneNames,
+												   FSkinnedMeshRuntime_Lf& Runtime,
+												   const FSkinnedMeshReference_Lf& Reference,
+												   FSkinnedMeshGlobalLibrary_Lf& Library,
+												   FSkinnedMeshGlobalLibrary_RenderThread_Lf& Library_RenderThread,
+												   const EBoneSpaces::Type Space,
+												   float AnimationDeltaTime, int32 CurrentFrameCount,
+												   const TObjectPtr<UTurboSequence_ThreadContext_Lf>& ThreadContext);
 };

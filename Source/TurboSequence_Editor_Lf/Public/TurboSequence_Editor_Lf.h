@@ -18,7 +18,7 @@ public:
 	virtual void ShutdownModule() override;
 	void AddMenu(FMenuBarBuilder& MenuBuilder);
 	void AddMenu_Widget(FMenuBuilder& MenuBuilder);
-
+	
 	TSharedPtr<FTurboSequence_MeshAssetAction_Lf> TurboSequence_MeshAssetTypeActions;
 	TSharedPtr<FTurboSequence_AnimLibraryAction_Lf> TurboSequence_AnimLibraryTypeActions;
 
@@ -31,7 +31,8 @@ public:
 	                                  const TObjectPtr<UWorld> World, const bool bIsCollection);
 	inline static int16 RepairMaxIterationCounter = GET0_NUMBER;
 
-	void PluginButtonClicked() const;
+	static void CreateStaticMesh(UTurboSequence_MeshAsset_Lf* DataAsset);
+	
 	void OnInvalidMeshAssetCaches() const;
 
 	void OnFilesLoaded();

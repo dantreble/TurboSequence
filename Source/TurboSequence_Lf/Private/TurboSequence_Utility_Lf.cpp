@@ -8,8 +8,6 @@
 #include "TurboSequence_ComputeShaders_Lf.h"
 #include "TurboSequence_FootprintAsset_Lf.h"
 #include "Engine/SkeletalMeshSocket.h"
-#include "Rendering/SkeletalMeshModel.h"
-#include "Rendering/SkeletalMeshRenderData.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 
 
@@ -24,7 +22,9 @@ uint32 FTurboSequence_Utility_Lf::CreateRenderer(FSkinnedMeshReference_Lf& Refer
                                                  const TArray<TObjectPtr<UMaterialInterface>>& Materials,
                                                  uint32 MaterialsHash)
 {
-	if (RenderComponents.Contains(FromAsset) && RenderComponents[FromAsset].NiagaraRenderer.Contains(MaterialsHash))
+	FRenderingMaterialMap_Lf* RenderingMaterialMap = RenderComponents.Find(FromAsset);
+
+	if (RenderingMaterialMap && RenderingMaterialMap->NiagaraRenderer.Contains(MaterialsHash))
 	{
 		return MaterialsHash;
 	}
@@ -41,13 +41,12 @@ uint32 FTurboSequence_Utility_Lf::CreateRenderer(FSkinnedMeshReference_Lf& Refer
 	                                           GlobalData->NameNiagaraCustomData);
 
 	RenderData.Materials = Materials;
-	Reference.RenderData.Add(MaterialsHash, RenderData);
-	Reference.RenderData[MaterialsHash].RenderReference = RenderReference;
-
-
+	
+	RenderData.RenderReference = RenderReference;
+	
 	// Spawn the Niagara system on the actor
-	const TObjectPtr<UNiagaraComponent> Component = UNiagaraFunctionLibrary::SpawnSystemAttached(
-		Reference.RenderData[MaterialsHash].RenderReference,
+	const TObjectPtr<UNiagaraComponent> NiagaraComponent = UNiagaraFunctionLibrary::SpawnSystemAttached(
+		RenderData.RenderReference,
 		InstanceSceneComponent,
 		FName("MeshLODRenderer"),
 		FVector::ZeroVector,
@@ -56,35 +55,25 @@ uint32 FTurboSequence_Utility_Lf::CreateRenderer(FSkinnedMeshReference_Lf& Refer
 		false
 	);
 
-	Component->SetVisibleInRayTracing(true);
-
-	TArray<FRenderingMaterialKeyValue_Lf> ConvertedMaterial;
-	for (const TObjectPtr<UMaterialInterface>& Material : Materials)
-	{
-		FRenderingMaterialKeyValue_Lf Mat = FRenderingMaterialKeyValue_Lf();
-		Mat.MaterialKey = Material;
-
-		ConvertedMaterial.Add(Mat);
-	}
-
-	if (!RenderComponents.Contains(FromAsset))
+	NiagaraComponent->SetVisibleInRayTracing(true);
+	
+	if (RenderingMaterialMap == nullptr)
 	{
 		FRenderingMaterialMap_Lf Map = FRenderingMaterialMap_Lf();
 		FRenderingMaterialItem_Lf Item = FRenderingMaterialItem_Lf();
-		Item.NiagaraRenderer = Component;
-		Item.Materials = ConvertedMaterial;
+		Item.NiagaraRenderer = NiagaraComponent;
 		Map.NiagaraRenderer.Add(MaterialsHash, Item);
 		RenderComponents.Add(FromAsset, Map);
+
+		RenderingMaterialMap = &RenderComponents.Add(FromAsset, Map);
 	}
 	else
 	{
 		FRenderingMaterialItem_Lf Item = FRenderingMaterialItem_Lf();
-		Item.NiagaraRenderer = Component;
-		Item.Materials = ConvertedMaterial;
-		RenderComponents[FromAsset].NiagaraRenderer.Add(MaterialsHash, Item);
+		Item.NiagaraRenderer = NiagaraComponent;
+		RenderingMaterialMap->NiagaraRenderer.Add(MaterialsHash, Item);
 	}
-
-
+	
 	// Add the mesh to the component we just created
 	for (const TTuple<uint8, FSkinnedMeshReferenceLodElement_Lf>& Lod : LevelOfDetails)
 	{
@@ -95,43 +84,26 @@ uint32 FTurboSequence_Utility_Lf::CreateRenderer(FSkinnedMeshReference_Lf& Refer
 			if (LodElement.GPUMeshIndex < FTurboSequence_Helper_Lf::NotVisibleMeshIndex)
 			{
 				const FName& WantedMeshName = FName(FString::Format(
-					*Reference.RenderData[MaterialsHash].GetMeshName(),
+					*RenderData.GetMeshName(),
 					{*FString::FormatAsNumber(LodElement.GPUMeshIndex)}));
 
-				RenderComponents[FromAsset].NiagaraRenderer[MaterialsHash].NiagaraRenderer->SetVariableStaticMesh(
+				NiagaraComponent->SetVariableStaticMesh(
 					WantedMeshName, LodElement.Mesh);
 			}
 		}
 	}
 
 	// Set the Materials
+	FString MaterialsParameterName = RenderData.GetMaterialsName();
+	
 	int32 NumMaterials = Materials.Num();
 	for (int32 MaterialIdx = GET0_NUMBER; MaterialIdx < NumMaterials; ++MaterialIdx)
 	{
 		const FName& WantedMaterialName = FName(FString::Format(
-			*Reference.RenderData[MaterialsHash].GetMaterialsName(), {*FString::FormatAsNumber(MaterialIdx)}));
-
-		TObjectPtr<UMaterialInstanceDynamic> MaterialInstance = UMaterialInstanceDynamic::Create(
-			Materials[MaterialIdx], nullptr);
-
-		// SkinWeight_Texture2DArray
-		MaterialInstance->SetTextureParameterValue(FTurboSequence_Helper_Lf::NameMaterialParameterMeshDataTexture,
-		                                           FromAsset->MeshDataTexture);
-
-		// SkinWeight_Tex
-		MaterialInstance->SetScalarParameterValue(
-			FTurboSequence_Helper_Lf::NameMaterialParameterMeshDataTextureSizeX,
-			FromAsset->MeshDataTexture->GetSizeX());
-		MaterialInstance->SetScalarParameterValue(
-			FTurboSequence_Helper_Lf::NameMaterialParameterMeshDataTextureSizeY,
-			FromAsset->MeshDataTexture->GetSizeY());
-
-		RenderComponents[FromAsset].NiagaraRenderer[MaterialsHash].NiagaraRenderer->SetVariableMaterial(
-			WantedMaterialName, MaterialInstance);
-
-		// For Debugging nice...
-		RenderComponents[FromAsset].NiagaraRenderer[MaterialsHash].Materials[MaterialIdx].MaterialValue =
-			MaterialInstance;
+			*MaterialsParameterName, {*FString::FormatAsNumber(MaterialIdx)}));
+		
+		NiagaraComponent->SetVariableMaterial(
+			WantedMaterialName, Materials[MaterialIdx]);
 	}
 
 	// Set Bounds
@@ -143,11 +115,13 @@ uint32 FTurboSequence_Utility_Lf::CreateRenderer(FSkinnedMeshReference_Lf& Refer
 			// Basically 5000-Meter Radius
 			constexpr float BoundsExtend = GET1000_NUMBER * GET1000_NUMBER / GET2_NUMBER;
 			const FBox& Bounds = FBox(FVector::OneVector * -BoundsExtend, FVector::OneVector * BoundsExtend);
-			RenderComponents[FromAsset].NiagaraRenderer[MaterialsHash].NiagaraRenderer->SetEmitterFixedBounds(
-				Reference.RenderData[MaterialsHash].GetEmitterName(), Bounds);
+			NiagaraComponent->SetEmitterFixedBounds(
+				RenderData.GetEmitterName(), Bounds);
 			break;
 		}
 	}
+
+	Reference.RenderData.Add(MaterialsHash, RenderData);
 
 	return MaterialsHash;
 }
@@ -3220,6 +3194,62 @@ void FTurboSequence_Utility_Lf::ExtractRootMotionFromAnimations(FTransform& OutA
 	OutAtom = FTransform(OutputTransform);
 }
 
+void FTurboSequence_Utility_Lf::GetTransforms(TArray<FTransform> &OutAtoms, const TArray<int32> &BoneIndices, FSkinnedMeshRuntime_Lf& Runtime,
+											   const FSkinnedMeshReference_Lf& Reference,
+											   FSkinnedMeshGlobalLibrary_Lf& Library,
+											   FSkinnedMeshGlobalLibrary_RenderThread_Lf& Library_RenderThread,
+											   const EBoneSpaces::Type Space,
+											   float AnimationDeltaTime, int32 CurrentFrameCount,
+											   const TObjectPtr<UTurboSequence_ThreadContext_Lf>& ThreadContext)
+{
+	SolveAnimations(Runtime, Library, Library_RenderThread, Reference, AnimationDeltaTime, CurrentFrameCount,
+					ThreadContext);
+
+	const FReferenceSkeleton& ReferenceSkeleton = GetReferenceSkeleton(Runtime.DataAsset);
+
+	TMap<int32, FTransform> BlendedBonesLocalSpace;
+
+	for (const int32 BoneIndex : BoneIndices)
+	{
+		FTransform OutAtom = FTransform::Identity;
+
+		int32 RuntimeIndex = BoneIndex;
+		while (RuntimeIndex != INDEX_NONE)
+		{
+			if (Runtime.IKData.Contains(RuntimeIndex) && Runtime.IKData[RuntimeIndex].bIsInUsingWriteDataThisFrame)
+			{
+				OutAtom *= Runtime.IKData[RuntimeIndex].IKWriteTransform;
+				break;
+			}
+
+			if(BlendedBonesLocalSpace.Contains(RuntimeIndex))
+			{
+				OutAtom *= BlendedBonesLocalSpace[RuntimeIndex];	
+			}
+			else
+			{
+				FTransform BoneFromAnimations = BendBoneFromAnimations(RuntimeIndex, Runtime, Reference, Library);
+				OutAtom *= BoneFromAnimations;
+				BlendedBonesLocalSpace.Add(RuntimeIndex,BoneFromAnimations);
+			}
+
+			RuntimeIndex = GetSkeletonParentIndex(ReferenceSkeleton, RuntimeIndex);
+		}
+
+		OutAtoms.Add(OutAtom);
+	}
+	
+	
+	if (Space == EBoneSpaces::Type::WorldSpace)
+	{
+		for(int i = 0; i < OutAtoms.Num(); ++i)
+		{
+			OutAtoms[i] *= Runtime.WorldSpaceTransform;
+		}
+	}
+}
+
+
 void FTurboSequence_Utility_Lf::GetIKTransform(FTransform& OutAtom, uint16 BoneIndex, FSkinnedMeshRuntime_Lf& Runtime,
                                                const FSkinnedMeshReference_Lf& Reference,
                                                FSkinnedMeshGlobalLibrary_Lf& Library,
@@ -3376,3 +3406,27 @@ void FTurboSequence_Utility_Lf::GetSocketTransform(FTransform& OutTransform, con
 	OutTransform = FTransform(Socket->RelativeRotation, Socket->RelativeLocation, Socket->RelativeScale) *
 		OutTransform;
 }
+
+void FTurboSequence_Utility_Lf::GetBoneTransforms(TArray<FTransform>& OutTransforms, TArray<FName> BoneNames,
+												   FSkinnedMeshRuntime_Lf& Runtime,
+												   const FSkinnedMeshReference_Lf& Reference,
+												   FSkinnedMeshGlobalLibrary_Lf& Library,
+												   FSkinnedMeshGlobalLibrary_RenderThread_Lf& Library_RenderThread,
+												   const EBoneSpaces::Type Space,
+												   float AnimationDeltaTime, int32 CurrentFrameCount,
+												   const TObjectPtr<UTurboSequence_ThreadContext_Lf>& ThreadContext)
+{
+	TArray<int32> BoneIndices;
+
+	const FReferenceSkeleton &ReferenceSkeleton = GetReferenceSkeleton(Runtime.DataAsset);
+	
+	for (FName &BoneName : BoneNames)
+	{
+		BoneIndices.Add(GetSkeletonBoneIndex(ReferenceSkeleton, BoneName));
+	}
+	
+	GetTransforms(OutTransforms, BoneIndices, Runtime, Reference, Library, Library_RenderThread, Space,
+	              AnimationDeltaTime, CurrentFrameCount, ThreadContext);
+}
+
+

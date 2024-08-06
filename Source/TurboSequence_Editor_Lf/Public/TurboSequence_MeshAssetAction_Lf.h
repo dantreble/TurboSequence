@@ -15,4 +15,7 @@ public:
 	virtual FText GetName() const override;
 	virtual FColor GetTypeColor() const override;
 	virtual uint32 GetCategories() override;
+
+	void GetActions( const TArray<UObject*>& InObjects, FMenuBuilder& MenuBuilder );
+	void CreateStaticMesh(TArray<TWeakObjectPtr<class UTurboSequence_MeshAsset_Lf>> Objects);
 };

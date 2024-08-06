@@ -41,10 +41,7 @@ public:
 
 	UPROPERTY(EditAnywhere)
 	FName NameNiagaraLevelOfDetailIndex = FName("User.LevelOfDetail_Index");
-
-	UPROPERTY(EditAnywhere)
-	FName NameNiagaraParticleRemove = FName("User.Particle_Remove");
-
+	
 	UPROPERTY(EditAnywhere)
 	FName NameNiagaraCustomData = FName("User.CustomData");
 

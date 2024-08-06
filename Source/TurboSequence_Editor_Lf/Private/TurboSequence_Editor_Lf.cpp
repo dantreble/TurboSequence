@@ -2,13 +2,9 @@
 
 #include "TurboSequence_Editor_Lf.h"
 
-#include "EditorUtilitySubsystem.h"
-#include "EditorUtilityWidgetBlueprint.h"
-#include "FileHelpers.h"
-#include "LevelEditor.h"
 #include "TurboSequence_ControlWidget_Lf.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "Interfaces/IPluginManager.h"
+#include "Rendering/RenderCommandPipes.h"
 #include "UObject/ConstructorHelpers.h"
 
 #define LOCTEXT_NAMESPACE "FTurboSequence_Editor_LfModule"
@@ -26,19 +22,7 @@ void FTurboSequence_Editor_LfModule::StartupModule()
 
 	TurboSequence_AnimLibraryTypeActions = MakeShared<FTurboSequence_AnimLibraryAction_Lf>();
 	AssetTools.RegisterAssetTypeActions(TurboSequence_AnimLibraryTypeActions.ToSharedRef());
-
-	FLevelEditorModule& LevelEditorModule =
-		FModuleManager::LoadModuleChecked<FLevelEditorModule>
-		("LevelEditor");
-	TSharedPtr<FExtender> MenuExtender = MakeShareable(new FExtender());
-	MenuExtender->AddMenuBarExtension(
-		"Help",
-		EExtensionHook::Before,
-		nullptr,
-		FMenuBarExtensionDelegate::CreateRaw(this, &FTurboSequence_Editor_LfModule::AddMenu)
-	);
-	LevelEditorModule.GetMenuExtensibilityManager()->AddExtender(MenuExtender);
-
+	
 	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 	AssetRegistry.OnFilesLoaded().AddRaw(this, &FTurboSequence_Editor_LfModule::OnFilesLoaded);
 }
@@ -58,36 +42,8 @@ void FTurboSequence_Editor_LfModule::ShutdownModule()
 	AssetRegistry.OnFilesLoaded().RemoveAll(this);
 }
 
-void FTurboSequence_Editor_LfModule::AddMenu(FMenuBarBuilder& MenuBuilder)
-{
-	MenuBuilder.AddPullDownMenu(
-		LOCTEXT("TurboSequence_Lf_Menu", "Turbo Sequence"),
-		LOCTEXT("CrodwPlugin_Lf_MenuTooltipKey", "Opens useful tools for creating assets with the Turbo Sequence"),
-		FNewMenuDelegate::CreateRaw(this, &FTurboSequence_Editor_LfModule::AddMenu_Widget),
-		FName(TEXT("Turbo Sequence")),
-		FName(TEXT("Turbo Sequence")));
-}
 
-void FTurboSequence_Editor_LfModule::AddMenu_Widget(class FMenuBuilder& MenuBuilder)
-{
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("TurboSequence_Lf_MenuEntry", "Control Panel"),
-		LOCTEXT("CrodwPlugin_Lf_MenuEntryTooltipKey", "Opens the Control Panel for the Character Creation"),
-		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateRaw(this, &FTurboSequence_Editor_LfModule::PluginButtonClicked)),
-		FName(TEXT("Control Panel")),
-		EUserInterfaceActionType::Button,
-		FName(TEXT("Control Panel")));
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("TurboSequence_Lf_MenuEntry", "Re-cache Mesh Assets"),
-		LOCTEXT("CrodwPlugin_Lf_MenuEntryTooltipKey",
-		        "Makes the asset see this editor as new Engine Version which makes it rebuild."),
-		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateRaw(this, &FTurboSequence_Editor_LfModule::OnInvalidMeshAssetCaches)),
-		FName(TEXT("Re-cache Mesh Assets")),
-		EUserInterfaceActionType::Button,
-		FName(TEXT("Re-cache Mesh Assets")));
-}
+
 
 void FTurboSequence_Editor_LfModule::RepairMeshAssetAsync()
 {
@@ -323,79 +279,295 @@ void FTurboSequence_Editor_LfModule::RepairMeshAssetAsync2(const TObjectPtr<UTur
 				}
 			}
 		}
-	});
-	World->GetTimerManager().SetTimerForNextTick(WaitTimerCallback);
+	 });
+	 World->GetTimerManager().SetTimerForNextTick(WaitTimerCallback);
 }
 
-void FTurboSequence_Editor_LfModule::PluginButtonClicked() const
+int GetGPUBoneIndex(const TMap<int32, int32>& CPUBoneToGPUBoneIndicesMap,
+	const FSkinWeightVertexBuffer* SkinWeightBuffer, const uint32 VertexIndex, const TArray<FBoneIndexType> & SectionBoneMap,
+	const int InfluenceIndex)
 {
-	TArray<FAssetData> AssetData;
-	const FAssetRegistryModule& AssetRegistry =
-		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-	AssetRegistry.Get().GetAssetsByClass(
-		FTopLevelAssetPath(UEditorUtilityWidgetBlueprint::StaticClass()->GetPathName()), AssetData);
+	const uint32 SectionBoneIndex = SkinWeightBuffer->GetBoneIndex(VertexIndex, InfluenceIndex);
+	const FBoneIndexType ModelBoneIndex = SectionBoneMap[SectionBoneIndex];
+	return CPUBoneToGPUBoneIndicesMap[ModelBoneIndex];
+}
 
-	if (AssetData.Num())
+void FTurboSequence_Editor_LfModule::CreateStaticMesh(UTurboSequence_MeshAsset_Lf* DataAsset)
+{
+	const uint32 UVChannel = 1;
+
+	USkeletalMesh* OriginalMesh = DataAsset->ReferenceMeshNative.Get();
+	
+	if(!IsValid(OriginalMesh))
 	{
-		UEditorUtilityWidgetBlueprint* WidgetBP = nullptr;
-		for (const FAssetData& Asset : AssetData)
+		return;
+	}
+
+	//Create a duplicate of the original mesh, because we are going to modify its vertex colours and uvs
+	USkeletalMesh* SkeletalMeshCopy = DuplicateObject<USkeletalMesh>(OriginalMesh, OriginalMesh->GetOuter());
+	
+	const int32 NumLoDs = SkeletalMeshCopy->GetLODNum(); 
+	
+	TSet<uint32> UsedBoneSet;
+
+	FSkeletalMeshRenderData* SkeletalMeshRenderData = SkeletalMeshCopy->GetResourceForRendering();
+	
+	for (int32 LoDIndex = 0; LoDIndex < NumLoDs; LoDIndex++)
+	{
+		const FSkeletalMeshLODRenderData &SkeletalMeshLODRenderData = SkeletalMeshRenderData->LODRenderData[LoDIndex];
+		const FSkinWeightVertexBuffer* SkinWeightBuffer = SkeletalMeshLODRenderData.GetSkinWeightVertexBuffer();
+		
+		const int32 NumVertices = SkeletalMeshLODRenderData.GetNumVertices();
+		for (int32 VertexIndex = 0; VertexIndex < NumVertices; ++VertexIndex)
 		{
-			if (UEditorUtilityWidgetBlueprint* Widget = Cast<UEditorUtilityWidgetBlueprint>(Asset.GetAsset()); Widget->
-				ParentClass->IsChildOf(UTurboSequence_ControlWidget_Lf::StaticClass()))
+			int32 SectionIndex = INDEX_NONE;
+			int32 SectionVertexIndex = INDEX_NONE;
+			SkeletalMeshLODRenderData.GetSectionFromVertexIndex(VertexIndex, SectionIndex, SectionVertexIndex);
+			const TArray<FBoneIndexType> &SectionBoneMap = SkeletalMeshLODRenderData.RenderSections[SectionIndex].BoneMap;
+				
+			for( uint32 InfluenceIndex = 0; InfluenceIndex < 4; ++InfluenceIndex)
 			{
-				WidgetBP = Widget;
-				break;
+				UsedBoneSet.Add(SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, InfluenceIndex)]);
 			}
 		}
+	}
 
-		if (WidgetBP)
+	UE_LOG(LogTurboSequence_Lf, Display, TEXT("Used bone count %d"), UsedBoneSet.Num());
+
+	TSet<uint32> UsedBoneSetWithParents;
+
+	FReferenceSkeleton& ReferenceSkeleton = OriginalMesh->GetRefSkeleton();
+
+	for (int32 Bone : UsedBoneSet)
+	{
+		bool bAlreadyInSet = false;
+
+		while( Bone != INDEX_NONE && !bAlreadyInSet)
 		{
-			UEditorUtilitySubsystem* EditorUtilitySubsystem = GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>();
-			EditorUtilitySubsystem->SpawnAndRegisterTab(WidgetBP);
+			UsedBoneSetWithParents.Add(Bone, &bAlreadyInSet);
+			Bone = ReferenceSkeleton.GetParentIndex(Bone);	
 		}
-		else
+	}
+
+	UE_LOG(LogTurboSequence_Lf, Display, TEXT("Used bone count with parents %d"), UsedBoneSetWithParents.Num());
+
+
+	TArray<int32> UsedBoneWithParentsOrdered(UsedBoneSetWithParents.Array());
+	UsedBoneWithParentsOrdered.Sort();
+	
+	TArray<uint32> BonesAtDepth;
+	BonesAtDepth.AddDefaulted(64);
+	
+	for (int32 Bone : UsedBoneWithParentsOrdered)
+	{
+		int32 Depth = 0;
+
+		while( Bone != INDEX_NONE)
 		{
-			// Widget not found
-			UE_LOG(LogTemp, Warning, TEXT("Can't find widget derived from UTurboSequence_ControlWidget_Lf"));
+			Bone = ReferenceSkeleton.GetParentIndex(Bone);
+			Depth++;
 		}
+		
+		BonesAtDepth[Depth-1]++;
+	}
+
+	int32 Depths = BonesAtDepth.Num();
+
+	for( int32 Depth = 0; Depth < Depths; ++Depth)
+	{
+		UE_LOG(LogTurboSequence_Lf, Display, TEXT("Depth %2d Bones %2d"), Depth, BonesAtDepth[Depth]);
+	}
+	
+	
+
+	TArray<int32> UsedBoneOrdered(UsedBoneSet.Array());
+	UsedBoneOrdered.Sort();
+
+	TMap<int32, int32> CPUBoneToGPUBoneIndicesMap;
+		
+	int32 UsedBoneCount = UsedBoneOrdered.Num();
+	for(int32 RemappedIndex = 0; RemappedIndex < UsedBoneCount; ++RemappedIndex)
+	{
+		CPUBoneToGPUBoneIndicesMap.Add(UsedBoneOrdered[RemappedIndex],RemappedIndex);
+	}
+
+	//Modify the skeletal mesh
+	SkeletalMeshCopy->SetFlags(RF_Transactional);
+	SkeletalMeshCopy->Modify();
+
+	SkeletalMeshCopy->SetHasVertexColors(true);
+	SkeletalMeshCopy->SetVertexColorGuid(FGuid::NewGuid());
+
+	// Release the static mesh's resources.
+	SkeletalMeshCopy->ReleaseResources();
+
+	// Flush the resource release commands to the rendering thread to ensure that the build doesn't occur while a resource is still
+	// allocated, and potentially accessing the UStaticMesh.
+	SkeletalMeshCopy->ReleaseResourcesFence.Wait();
+	
+	for (int32 LODIndex = 0; LODIndex < NumLoDs; LODIndex++)
+	{
+		FSkeletalMeshLODRenderData &LODData = SkeletalMeshRenderData->LODRenderData[LODIndex];
+
+		auto& [StaticMeshVertexBuffer, PositionVertexBuffer, ColorVertexBuffer] = LODData.StaticVertexBuffers;
+		
+		uint32 NumVertices = LODData.GetNumVertices();
+		
+		if (LODData.StaticVertexBuffers.ColorVertexBuffer.GetNumVertices() == 0)
+		{
+			// Mesh doesn't have a color vertex buffer yet!  We'll create one now.
+			ColorVertexBuffer.InitFromSingleColor(FColor::White, NumVertices);
+			BeginInitResource(&ColorVertexBuffer, &UE::RenderCommandPipe::SkeletalMesh);
+		}
+		
+		//Take a copy of the original uv0 and tangents before I recreate the buffer 
+		TArray<FVector2f> UV0;
+		TArray<FVector3f> TangentX;
+		TArray<FVector3f> TangentY;
+		TArray<FVector3f> TangentZ;
+		for (uint32 VertexIndex = 0; VertexIndex < NumVertices; ++VertexIndex)
+		{
+			UV0.Add(StaticMeshVertexBuffer.GetVertexUV(VertexIndex,0));
+			TangentX.Add(StaticMeshVertexBuffer.VertexTangentX(VertexIndex));
+			TangentY.Add(StaticMeshVertexBuffer.VertexTangentY(VertexIndex));
+			TangentZ.Add(StaticMeshVertexBuffer.VertexTangentZ(VertexIndex));
+		}
+		
+		//Re init the buffer with more uvs
+		StaticMeshVertexBuffer.Init(StaticMeshVertexBuffer.GetNumVertices(),UVChannel+2,StaticMeshVertexBuffer.GetAllowCPUAccess());
+		BeginInitResource(&StaticMeshVertexBuffer, &UE::RenderCommandPipe::SkeletalMesh);
+
+		const FSkinWeightVertexBuffer* SkinWeightBuffer = LODData.GetSkinWeightVertexBuffer();
+		
+		for (uint32 VertexIndex = 0; VertexIndex < NumVertices; ++VertexIndex)
+		{
+			int32 SectionIndex = INDEX_NONE;
+			int32 SectionVertexIndex = INDEX_NONE;
+			LODData.GetSectionFromVertexIndex(VertexIndex, SectionIndex, SectionVertexIndex);
+			const TArray<FBoneIndexType> &SectionBoneMap = LODData.RenderSections[SectionIndex].BoneMap;
+
+			FColor BoneIndices;
+			
+			BoneIndices.R = CPUBoneToGPUBoneIndicesMap[SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, 0)]];
+			BoneIndices.G = CPUBoneToGPUBoneIndicesMap[SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, 1)]];
+			BoneIndices.B = CPUBoneToGPUBoneIndicesMap[SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, 2)]];
+			BoneIndices.A = CPUBoneToGPUBoneIndicesMap[SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, 3)]];
+
+			ColorVertexBuffer.VertexColor(VertexIndex) = BoneIndices;
+
+			//Copy the tangents
+			StaticMeshVertexBuffer.SetVertexTangents(VertexIndex, TangentX[VertexIndex],  TangentY[VertexIndex],TangentZ[VertexIndex]);
+			//Copy the first uv channel
+			StaticMeshVertexBuffer.SetVertexUV(VertexIndex, 0, UV0[VertexIndex]);
+
+			//Weights
+			FVector4 Weights;
+			Weights.X = SkinWeightBuffer->GetBoneWeight(VertexIndex, 0);
+			Weights.Y = SkinWeightBuffer->GetBoneWeight(VertexIndex, 1);
+			Weights.Z = SkinWeightBuffer->GetBoneWeight(VertexIndex, 2);
+			Weights.W = SkinWeightBuffer->GetBoneWeight(VertexIndex, 3);
+			Weights *= UE::AnimationCore::InvMaxRawBoneWeightFloat; 
+
+			float Sum = Weights.X + Weights.Y + Weights.Z + Weights.W;
+			//Scale so sum to 1.0
+			Weights *= 1.0f / Sum;
+
+			StaticMeshVertexBuffer.SetVertexUV(VertexIndex, UVChannel+0, FVector2f(Weights.X, Weights.Y));
+			StaticMeshVertexBuffer.SetVertexUV(VertexIndex, UVChannel+1, FVector2f(Weights.Z, Weights.W));
+		}
+	}
+	
+	SkeletalMeshCopy->InitResources();
+	SkeletalMeshCopy->GetOnMeshChanged().Broadcast();
+	
+	// Create Temp Actor
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	AActor* Actor = World->SpawnActor<AActor>();
+
+	// Create Temp SkeletalMesh Component
+	USkeletalMeshComponent* Component = NewObject<USkeletalMeshComponent>(Actor);
+	Component->RegisterComponent();
+	Component->SetSkeletalMesh(SkeletalMeshCopy);
+	
+	FString PackageName;
+
+	UStaticMesh* ExistingMesh = DataAsset->InstancedMeshes.Num() > 0 ? DataAsset->InstancedMeshes[0].StaticMesh.Get() : nullptr;
+
+	UBodySetup* ExistingBodySetup = nullptr; 
+	
+	if (IsValid(ExistingMesh))
+	{
+		PackageName = ExistingMesh->GetPackage()->GetName();
+		ExistingBodySetup = ExistingMesh->GetBodySetup();
 	}
 	else
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Can't find widget ... that's pretty bad"));
+		const FString AssetName = DataAsset->GetPackage()->GetName();
+		const FString SanitizedBasePackageName = UPackageTools::SanitizePackageName(AssetName);
+		const FString DataAssetPackageName = FPackageName::GetLongPackagePath(SanitizedBasePackageName) + TEXT("/");
+			
+		PackageName = DataAssetPackageName + SkeletalMeshCopy->GetName().Replace(TEXT("SK_"),TEXT("SM_TS_"));
 	}
-}
 
-void FTurboSequence_Editor_LfModule::OnInvalidMeshAssetCaches() const
-{
-	TArray<FAssetData> AssetData;
-	const FAssetRegistryModule& AssetRegistry =
-		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-	AssetRegistry.Get().GetAssetsByClass(FTopLevelAssetPath(UTurboSequence_MeshAsset_Lf::StaticClass()->GetPathName()),
-	                                     AssetData);
-
-	//UE_LOG(LogTemp, Warning, TEXT("%d"), AssetData.Num());
-	//UE_LOG(LogTemp, Warning, TEXT("%s"), *UTurboSequence_MeshAsset_Lf::StaticClass()->GetPathName());
-
-	if (AssetData.Num())
+	//Create a static mesh
+	IMeshUtilities& MeshUtilities = FModuleManager::Get().LoadModuleChecked<IMeshUtilities>("MeshUtilities");
+	UStaticMesh* StaticMesh = MeshUtilities.ConvertMeshesToStaticMesh({ Component }, Component->GetComponentToWorld(), PackageName);
+	
+	if(!IsValid(StaticMesh))
 	{
-		UE_LOG(LogTurboSequence_Lf, Warning, TEXT("Re-Cache Turbo Sequence Mesh Assets"));
-		for (const FAssetData& Asset : AssetData)
-		{
-			const TObjectPtr<UTurboSequence_MeshAsset_Lf> MeshAsset = Cast<UTurboSequence_MeshAsset_Lf>(
-				Asset.GetAsset());
-
-			// MeshAsset->Platform = FString("");
-			// MeshAsset->EngineVersion = FName("");
-
-			MeshAsset->bNeedGeneratedNextEngineStart = true;
-
-
-			FTurboSequence_Helper_Lf::SaveAsset(MeshAsset);
-		}
-
-		UE_LOG(LogTurboSequence_Lf, Warning, TEXT("Done ... please close the editor and open it again."));
+		return;
 	}
+
+	if (ExistingBodySetup)
+	{
+		StaticMesh->SetBodySetup(ExistingBodySetup);
+	}
+
+	check(NumLoDs == StaticMesh->GetNumLODs());
+
+	StaticMesh->ImportVersion = LastVersion;
+	
+	// Reset LODs to the settings of the skeletal mesh
+	StaticMesh->bAutoComputeLODScreenSize = false;
+	
+	// LOD Info for ScreenSize
+	const TArray<FSkeletalMeshLODInfo>& LODInfoArray = SkeletalMeshCopy->GetLODInfoArray();
+	for (int32 LODIndex = 0; LODIndex < LODInfoArray.Num(); LODIndex++)
+	{
+		FPerPlatformFloat ScreenSize = LODInfoArray[LODIndex].ScreenSize;
+		if (StaticMesh->IsSourceModelValid(LODIndex))
+		{
+			FStaticMeshSourceModel& SourceModel = StaticMesh->GetSourceModel(LODIndex);
+			SourceModel.ScreenSize = ScreenSize;
+			SourceModel.BuildSettings.bGenerateLightmapUVs = false;
+		}
+	}
+	
+	// Apply lod settings
+	StaticMesh->Build(false);
+	StaticMesh->PostEditChange();
+	StaticMesh->MarkPackageDirty();
+
+	DataAsset->InstancedMeshes.Empty();
+	FMeshItem_Lf MeshItemLod0;
+	MeshItemLod0.StaticMesh = StaticMesh;
+	DataAsset->InstancedMeshes.Add(MeshItemLod0);
+
+	DataAsset->MeshData.Empty();
+	FMeshData_Lf MeshDataLod0;
+	MeshDataLod0.NumVertices = StaticMesh->GetNumVertices(0); //SkeletalMeshRenderData->LODRenderData[0].GetNumVertices();
+	MeshDataLod0.CPUBoneToGPUBoneIndicesMap = CPUBoneToGPUBoneIndicesMap;
+	DataAsset->MeshData.Add(MeshDataLod0);
+		
+	DataAsset->MarkPackageDirty();
+	
+	// Destroy Temp Component and Actor
+	Component->UnregisterComponent();
+	Component->DestroyComponent();
+	Actor->Destroy();
 }
+
+
 
 void FTurboSequence_Editor_LfModule::OnFilesLoaded()
 {
