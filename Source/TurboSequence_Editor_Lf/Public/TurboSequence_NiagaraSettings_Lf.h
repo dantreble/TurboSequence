@@ -53,8 +53,8 @@ public:
 	UPROPERTY(EditAnywhere, Config, meta = (DisplayName = "Niagara Particle Scale Name"))
 	FString NameNiagaraParticleScales = FString("User.Particle_Scale");
 
-	UPROPERTY(EditAnywhere, Config, meta = (DisplayName = "Niagara Level of Detail Name"))
-	FString NameNiagaraLevelOfDetailIndex = FString("User.LevelOfDetail_Index");
+	UPROPERTY(EditAnywhere, Config, meta = (DisplayName = "Niagara Flags Name"))
+	FString NameNiagaraFlags = FString("User.Particle_Flags");
 
 	UPROPERTY(EditAnywhere, Config, meta = (DisplayName = "Niagara Custom Data Name"))
 	FString NameNiagaraCustomData = FString("User.CustomData");

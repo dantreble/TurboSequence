@@ -3,16 +3,18 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "NiagaraComponent.h"
 #include "TurboSequence_ComputeShaders_Lf.h"
 #include "TurboSequence_Helper_Lf.h"
-#include "TurboSequence_MeshAsset_Lf.h"
 #include "TurboSequence_MinimalData_Lf.h"
-#include "Animation/BlendSpace.h"
-#include "Misc/Optional.h"
+#include "BestFitAllocator.h"
+#include "TurboSequence_RenderData.h"
+
 
 #include "TurboSequence_Data_Lf.generated.h"
 
+struct FSkinnedMeshGlobalLibrary_Lf;
+struct FSkinnedMeshRuntime_Lf;
+class UNiagaraComponent;
 
 /*	==============================================================================================================
 												RENDERING
@@ -29,152 +31,85 @@ struct TURBOSEQUENCE_LF_API FCameraView_Lf
 	TOptional<EAspectRatioAxisConstraint> AspectRatioAxisConstraint;
 
 	UPROPERTY(EditAnywhere, Category="Aspect")
-	float Fov = GET60_NUMBER;
+	float Fov = 60;
 
 	UPROPERTY(EditAnywhere, Category="Aspect")
-	float NearClipPlane = GET1_NUMBER;
+	float NearClipPlane = 1;
 
 	UPROPERTY(EditAnywhere, Category="Aspect")
-	float FarClipPlane = GET1000_NUMBER;
+	float FarClipPlane = 1000;
 
 	UPROPERTY(EditAnywhere, Category="Aspect")
 	bool bIsPerspective = true;
 
 	UPROPERTY(EditAnywhere, Category="Aspect")
-	float OrthoWidth = GET10_NUMBER;
+	float OrthoWidth = 10;
 
 	UPROPERTY(EditAnywhere, Category="Transform")
 	FTransform CameraTransform;
 
-	FPlane Planes_Internal[GET6_NUMBER];
+	FPlane Planes_Internal[6];
 	FTransform InterpolatedCameraTransform_Internal;
 };
 
 USTRUCT()
-struct TURBOSEQUENCE_LF_API FRenderData_Lf
+struct FParticleFlags
+{
+	FParticleFlags() : Val(0) {}
+
+	FParticleFlags(const bool Alive, const uint8 BoneIndex)
+		: Alive(Alive),
+		  BoneIndex(BoneIndex)
+	{
+	}
+
+	GENERATED_BODY()
+
+	union
+	{
+		struct 
+		{
+			uint8 Alive : 1;
+			uint8 BoneIndex : 7;
+		};
+
+		uint8 Val;
+	};
+};
+
+
+UCLASS()
+class TURBOSEQUENCE_LF_API UTurboSequenceRenderAttachmentData : public UTurboSequence_RenderData
 {
 	GENERATED_BODY()
 
-	explicit FRenderData_Lf(const FName& EmitterName, const FName& PositionName, const FName& RotationName,
-	                        const FName& ScaleName, const FString& MeshName, const FString& MaterialsName,
-	                        const FName& LodName, const FName& CustomDataName)
-		: EmitterName(EmitterName),
-		  PositionName(PositionName),
-		  RotationName(RotationName),
-		  ScaleName(ScaleName),
-		  MeshName(MeshName),
-		  MaterialsName(MaterialsName),
-		  LodName(LodName),
-		  CustomDataName(CustomDataName)
-	{
-	}
-
-	FRenderData_Lf()
-	{
-	}
-
-	~FRenderData_Lf()
-	{
-	}
-
-	UPROPERTY()
-	TObjectPtr<UNiagaraSystem> RenderReference = nullptr;
-
-	UPROPERTY()
-	TArray<TObjectPtr<UMaterialInterface>> Materials;
-
-	// ID
-	TMap<int32, int32> InstanceMap; // < MeshID | Renderer Instance Index >
-
-	TArray<int32> FreeList;
-	TArray<bool> Alive;
+public:
 	
-	// Transform
-	TArray<FVector> ParticlePositions;
-	TArray<FVector3f> ParticleScales;
-	TArray<FVector4f> ParticleRotations;
+	static UTurboSequenceRenderAttachmentData* CreateObject(UObject* Outer, UTurboSequence_MeshAsset_Lf* InMeshAsset, const FVector& MeshMinBounds, const FVector& MeshMaxBounds);
+	
+	virtual void PrintRenderData() const override;
 
-	// Culling and Visibility
-	TArray<uint8> ParticleLevelOfDetails; // Index 32 -> Not Visible
+	
+	void AddAttachmentRenderInstance(const FAttachmentMeshHandle MeshHandle,
+								 const FTransform& WorldSpaceTransform, const FTransform3f& AttachmentLocalTransform, uint8 BoneIndex, int32
+								 SkeletonIndex);
 
-	// Custom Data
-	TArray<float> ParticleCustomData;
 
-	// Bounds Checking
-	FVector MinBounds = FVector::ZeroVector;
-	FVector MaxBounds = FVector::ZeroVector;
-
-	bool bChangedCollectionSizeThisFrame = false;
-	bool bChangedCollectionSizePreviousFrame = false;
-	bool bChangedPositionCollectionThisFrame = false;
-	bool bChangedRotationCollectionThisFrame = false;
-	bool bChangedScaleCollectionThisFrame = false;
-	bool bChangedLodCollectionThisFrame = false;
-	bool bChangedCustomDataCollectionThisFrame = false;
-
+	virtual void UpdateNiagaraEmitter() override;
 
 private:
-	FName EmitterName;
-	FName PositionName;
-	FName RotationName;
-	FName ScaleName;
-	FString MeshName;
-	FString MaterialsName;
-	FName LodName;
-	FName CustomDataName;
+	
+	//Attachment local transforms
+	TArray<FVector3f> ParticleAttachmentPositions;
+	TArray<FVector3f> ParticleAttachmentScales;
+	TArray<FVector4f> ParticleAttachmentRotations;
 
-	int32 UniqueID = 0;
+	bool bChangedParticleAttachmentPosition = false;
+	bool bChangedParticleAttachmentScale = false;
+	bool bChangedParticleAttachmentRotation = false;
 
-public:
-	FORCEINLINE int32 GetUniqueID() const
-	{
-		return UniqueID;
-	}
 
-	FORCEINLINE void IncrementUniqueID()
-	{
-		UniqueID++;
-	}
-
-	FORCEINLINE FName& GetEmitterName()
-	{
-		return EmitterName;
-	}
-
-	FORCEINLINE FName& GetPositionName()
-	{
-		return PositionName;
-	}
-
-	FORCEINLINE FName& GetRotationName()
-	{
-		return RotationName;
-	}
-
-	FORCEINLINE FName& GetScaleName()
-	{
-		return ScaleName;
-	}
-
-	FORCEINLINE FString& GetMeshName()
-	{
-		return MeshName;
-	}
-
-	FORCEINLINE FString& GetMaterialsName()
-	{
-		return MaterialsName;
-	}
-
-	FORCEINLINE FName& GetLodName()
-	{
-		return LodName;
-	}
-
-	FORCEINLINE FName& GetCustomDataName()
-	{
-		return CustomDataName;
-	}
+	
 };
 
 USTRUCT()
@@ -182,11 +117,7 @@ struct TURBOSEQUENCE_LF_API FCPUAnimationPose_Lf
 {
 	GENERATED_BODY()
 
-	int32 BelongsToKeyframe = GET0_NUMBER;
-
 	FAnimPose_Lf Pose;
-
-	//TArray<FVector4f> RawData;
 };
 
 USTRUCT()
@@ -196,8 +127,8 @@ struct TURBOSEQUENCE_LF_API FAnimationLibraryDataAllocationItem_Lf
 
 	FVector4f Data = FVector4f::Zero();
 
-	int32 ColIndex = GET0_NUMBER;
-	int32 RowIndex = GET0_NUMBER;
+	int32 ColIndex = 0;
+	int32 RowIndex = 0;
 };
 
 
@@ -206,62 +137,28 @@ struct TURBOSEQUENCE_LF_API FAnimationLibraryData_Lf
 {
 	GENERATED_BODY()
 
-	int32 MaxFrames = GET0_NUMBER;
+	int32 MaxFrames = 0;
 
-	uint16 NumBones = GET0_NUMBER;
-
-	// < Keyframe Index | Pose >
-	TMap<int32, FCPUAnimationPose_Lf> AnimPoses;
+	uint16 NumBones = 0;
+	
+	TMap<int32, FCPUAnimationPose_Lf> KeyframeIndexToPose;
 
 	TArray<int32> KeyframesFilled;
-	int32 IndexInCollection = GET0_NUMBER;
 
 	TMap<FName, int16> BoneNameToAnimationBoneIndex;
-
-
-	int32 AnimationDensity = GET0_NUMBER;
-
+	
 	FAnimPoseEvaluationOptions_Lf PoseOptions;
 
 	bool bHasPoseData = false;
 };
 
 USTRUCT()
-struct TURBOSEQUENCE_LF_API FAnimationMetaData_RenderThread_Lf
-{
-	GENERATED_BODY()
-
-	FAnimationMetaData_RenderThread_Lf()
-	{
-	}
-
-	~FAnimationMetaData_RenderThread_Lf()
-	{
-	}
-
-	int32 GPUAnimationIndex_0 = GET0_NUMBER;
-	int32 GPUAnimationIndex_1 = GET0_NUMBER;
-
-	uint16 FrameAlpha = GET0_NUMBER;
-	
-	uint16 FinalAnimationWeight = GET0_NUMBER;
-
-	uint16 LayerMaskIndex = GET0_NUMBER;
-};
-
-
-USTRUCT()
 struct TURBOSEQUENCE_LF_API FAnimationMetaData_Lf
 {
 	GENERATED_BODY()
 
-	FAnimationMetaData_Lf()
-	{
-	}
-
-	~FAnimationMetaData_Lf()
-	{
-	}
+	FAnimationMetaData_Lf() {}
+	
 
 	UPROPERTY(EditAnywhere, Category="Animation")
 	UAnimSequence* Animation = nullptr;
@@ -270,13 +167,14 @@ struct TURBOSEQUENCE_LF_API FAnimationMetaData_Lf
 	FTurboSequence_AnimPlaySettings_Lf Settings;
 
 	UPROPERTY(EditAnywhere, Category="Current Frame")
-	float AnimationTime = GET0_NUMBER;
+	float AnimationTime = 0;
+	float LastAnimationTime = 0;
 
 	UPROPERTY(EditAnywhere, Category="Current Frame")
-	float FinalAnimationWeight = GET1_NUMBER;
+	float FinalAnimationWeight = 1;
 
 	UPROPERTY(EditAnywhere, Category="Current Frame")
-	float AnimationWeightTime = 0.25f;
+	float AnimationWeightTime = 0.25f;	//On start this gets set to 0 and then counts up by delta time to AnimationWeightStartTime (in auto mode)
 
 	UPROPERTY(EditAnywhere, Category="Current Frame")
 	float AnimationWeightStartTime = 0.25f;
@@ -291,107 +189,44 @@ struct TURBOSEQUENCE_LF_API FAnimationMetaData_Lf
 	bool bIsLoop = false;
 
 	UPROPERTY(EditAnywhere, Category="Animation")
-	bool bIsOldAnimation = false;
-
-	UPROPERTY(EditAnywhere, Category="Animation")
-	uint16 LayerMaskIndex = GET0_NUMBER;
-
-	bool bNeedRebuildAnimationLayers = false;
-	// < Hash >
-	uint32 AnimationLayerHash = GET0_NUMBER;
-
-	uint32 AnimationGroupLayerHash = GET0_NUMBER;
-
-	FUintVector AnimationLibraryHash = FUintVector::ZeroValue;
-
-	float AnimationNormalizedTime = GET0_NUMBER;
-	float AnimationMaxPlayLength = GET1_NUMBER;
-	int32 CurrentFrame = GET0_NUMBER;
-
-	bool bIsRootBoneAnimation = false;
-	bool bIsSelfManagedAnimation = false;
-
-	int32 CPUAnimationIndex_0 = GET0_NUMBER;
-	int32 CPUAnimationIndex_1 = GET0_NUMBER;
+	bool bSetForRemoval = false;
 	
-	float FrameAlpha = GET0_NUMBER;
+	FBoneMaskSourceHandle AnimationGroupLayerHash;	//Source mask hash
 
-	uint32 AnimationID = GET0_NUMBER;
+	FUintVector AnimationLibraryHash = FUintVector::ZeroValue; //FUintVector(GetTypeHash(Skeleton), GetTypeHash(Asset), GetTypeHash(Animation))
 
-	FORCEINLINE uint32 SetHash(uint32 SecurityIndex) const
-	{
-		uint32 Hash = GET0_NUMBER;
-		Hash = HashCombine(Hash, GetTypeHash(FGuid::NewGuid()));
-		Hash = HashCombine(Hash, GetTypeHash(SecurityIndex));
-		return Hash;
-	}
+	float AnimationNormalizedTime = 0;
+	float AnimationMaxPlayLength = 1;
 
-	FORCEINLINE void SetAnimationID(const TMap<uint32, int32>& InputCollection, int32 BelongsToMeshID)
-	{
-		uint32 SecurityNumber = FMath::RandRange(INT32_MIN, INT32_MAX);
-		// Set the hash
-		AnimationID = SetHash(SecurityNumber);
-		// We don't want a 0 Hash because it's the Instance Return type when the function cancel unexpected
-		// Here we check if the hash is unique, if not we run the loop again,
-		// usually on the 1st try it already pass the check fine
-		while (InputCollection.Contains(AnimationID) || (!InputCollection.Contains(AnimationID) && AnimationID ==
-			GET0_NUMBER))
-		{
-			SecurityNumber = FMath::RandRange(INT32_MIN, INT32_MAX);
-			SecurityNumber++;
-			AnimationID = SetHash(SecurityNumber);
-		}
+	bool bIsRootBoneAnimation = false;	//My source mask contains the name of the root bone, hack for root motion
 
-		AnimationID = HashCombine(AnimationID, BelongsToMeshID);
-	}
+	int32 CPUAnimationIndex_0 = 0;
+	int32 CPUAnimationIndex_1 = 0;
+
+	int32 GPUAnimationIndex_0 = 0;
+	int32 GPUAnimationIndex_1 = 0;
+	
+	float FrameAlpha = 0;
+
+	FAnimationMetaDataHandle AnimationID; //Unique id within the SkinnedMeshRuntime
 };
 
+
 USTRUCT()
-struct TURBOSEQUENCE_LF_API FAnimationGroup_Lf
+struct TURBOSEQUENCE_LF_API FOverrideBoneTransform_Lf
 {
 	GENERATED_BODY()
 
-	int16 NumAnimationsInGroup = GET0_NUMBER;
-
-	float TotalAnimWeightRuntime = GET0_NUMBER;
-};
-
-USTRUCT()
-struct TURBOSEQUENCE_LF_API FIKBoneData_Lf
-{
-	GENERATED_BODY()
-
-	FTransform IKWriteTransform = FTransform::Identity;
-	bool bIsInUsingWriteDataThisFrame = false;
-	uint8 AliveCount = GET0_NUMBER;
-};
-
-USTRUCT()
-struct TURBOSEQUENCE_LF_API FRenderingMaterialItem_Lf
-{
-	GENERATED_BODY()
-
-	UPROPERTY(VisibleAnywhere)
-	TObjectPtr<UNiagaraComponent> NiagaraRenderer;
-};
-
-USTRUCT()
-struct TURBOSEQUENCE_LF_API FRenderingMaterialMap_Lf
-{
-	GENERATED_BODY()
-
-	UPROPERTY(VisibleAnywhere)
-	TMap<uint32, FRenderingMaterialItem_Lf> NiagaraRenderer;
+	FTransform OverrideTransform = FTransform::Identity;
 };
 
 USTRUCT()
 struct TURBOSEQUENCE_LF_API FAnimationBlendSpaceData_Lf
 {
 	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere)
+	
 	// < Animation ID | Sampler Index >
-	TMap<uint32, int32> Points;
+	TMap<FAnimationMetaDataHandle, int32> Points;
 
 	UPROPERTY(EditAnywhere)
 	FVector3f CurrentPosition = FVector3f::ZeroVector;
@@ -399,8 +234,8 @@ struct TURBOSEQUENCE_LF_API FAnimationBlendSpaceData_Lf
 	TArray<FBlendSampleData> CachedBlendSampleData;
 	FBlendFilter BlendFilter;
 
-	float LongestPlayLength = GET0_NUMBER;
-	float CurrentTime = GET0_NUMBER;
+	float LongestPlayLength = 0;
+	float CurrentTime = 0;
 
 	FAnimTickRecord Tick;
 	FMarkerTickRecord Record;
@@ -411,157 +246,43 @@ struct TURBOSEQUENCE_LF_API FAnimationBlendSpaceData_Lf
 /*	==============================================================================================================
 												REFERENCE
 	==============================================================================================================	*/
-
 USTRUCT()
-struct TURBOSEQUENCE_LF_API FSkinnedMeshReferenceLodElement_Lf
+struct FTurboSequenceRenderHandle
 {
 	GENERATED_BODY()
 
-	FSkinnedMeshReferenceLodElement_Lf()
-	{
-	}
-
-	~FSkinnedMeshReferenceLodElement_Lf()
-	{
-	}
-
-	UPROPERTY()
-	TObjectPtr<UStaticMesh> Mesh;
-
-	uint32 SkinWeightOffset = GET0_NUMBER;
-	uint8 MeshIndex = GET0_NUMBER;
-	uint8 GPUMeshIndex = GET0_NUMBER;
-	uint8 CollectionIndex = GET0_NUMBER;
-
-	uint32 MinLodDistance = GET0_NUMBER;
-	uint32 MaxLodDistance = GET0_NUMBER;
-
-	bool bIsRenderStateValid = false;
-	bool bIsAnimated = true;
-	bool bIsFrustumCullingEnabled = true;
-
-	// CPU Indices, GPU Indices > -> Only contains bones with skin weight and Lod with mesh
-	TMap<uint16, uint16> CPUBoneToGPUBoneIndicesMap;
+	FTurboSequenceRenderHandle() {}
+	
+	//The combination of these things needs a unique niagara renderer
+	FTurboSequenceRenderHandle(const TArray<UMaterialInterface*>& OverrideMaterials, const UNiagaraSystem *InSystem, const UStaticMesh *InStaticMesh, const bool bRenderInCustomDepth, const int32 StencilValue,const bool bInReceivesDecals,
+							   FLightingChannels LightingChannels );
+	
+	bool operator==(const FTurboSequenceRenderHandle& LayerMaskHandle) const = default;
+	bool operator!=(const FTurboSequenceRenderHandle& LayerMaskHandle) const = default;
+	
+	uint32 Hash = 0;
 };
 
-USTRUCT()
-struct TURBOSEQUENCE_LF_API FSkinnedMeshReference_RenderThread_Lf
+FORCEINLINE uint32 GetTypeHash(const FTurboSequenceRenderHandle& TurboSequenceRenderHandle)
 {
-	GENERATED_BODY()
-
-	UPROPERTY()
-	TObjectPtr<UTurboSequence_MeshAsset_Lf> DataAsset;
-
-	// CPU Indices, GPU Indices > -> Only contains bones with skin weight and Lod with mesh
-	TMap<uint16, uint16> FirstLodGPUBonesCollection;
-
-	int32 ReferenceCollectionIndex = GET0_NUMBER;
-
-	// Since we have Async Chunked dynamic loading of all data we need to store skin weights locally
-	// in the reference to async chunked load it into the GPU
-	TArray<FVector4f> LocalMeshSkinWeights;
-};
-
-USTRUCT()
-struct TURBOSEQUENCE_LF_API FSkinnedMeshReference_Lf : public FSkinnedMeshReference_RenderThread_Lf
-{
-	GENERATED_BODY()
-
-	FSkinnedMeshReference_Lf()
-	{
-	}
-
-	~FSkinnedMeshReference_Lf()
-	{
-	}
-
-	explicit FSkinnedMeshReference_Lf(const TObjectPtr<UTurboSequence_MeshAsset_Lf> Asset)
-	{
-		DataAsset = Asset;
-	}
-
-	FORCEINLINE bool operator==(const FSkinnedMeshReference_Lf& Rhs) const
-	{
-		return this->DataAsset == Rhs.DataAsset;
-	}
-
-	FORCEINLINE bool operator!=(const FSkinnedMeshReference_Lf& Rhs) const
-	{
-		return !(*this == Rhs);
-	}
-
-	FORCEINLINE uint32 GetClassHash() const
-	{
-		return GetTypeHash(DataAsset);
-	}
-
-	TMap<uint8, FSkinnedMeshReferenceLodElement_Lf> LevelOfDetails;
-
-	UPROPERTY()
-	TObjectPtr<UStaticMesh> FirstValidMeshLevelOfDetail;
-
-	uint16 NumCPUBones = GET0_NUMBER;
-
-	uint16 NumFirstLodGPUBones = GET0_NUMBER;
-	uint8 NumLevelOfDetailsWithMesh = GET0_NUMBER;
-
-	FTransform FirstReferenceBone;
-
-	TArray<FTransform> ComponentSpaceRestPose;
-
-	// < Material Hash | Data >
-	TMap<uint32, FRenderData_Lf> RenderData;
-};
+	return TurboSequenceRenderHandle.Hash;
+}
 
 /*	==============================================================================================================
 												RUNTIME
 	==============================================================================================================	*/
 
 USTRUCT()
-struct TURBOSEQUENCE_LF_API FSkinnedMeshRuntime_RenderThread_Lf
+struct TURBOSEQUENCE_LF_API FSkinnedMeshAttachmentRuntime
 {
 	GENERATED_BODY()
 
-	FSkinnedMeshRuntime_RenderThread_Lf()
-	{
-	}
-
-	~FSkinnedMeshRuntime_RenderThread_Lf()
-	{
-	}
-
-	explicit FSkinnedMeshRuntime_RenderThread_Lf(int32 WantedMeshID,
-	                                             const TObjectPtr<UTurboSequence_MeshAsset_Lf> Asset)
-	{
-		MeshID = WantedMeshID;
-		DataAsset = Asset;
-	}
-
-	UPROPERTY()
-	TObjectPtr<UTurboSequence_MeshAsset_Lf> DataAsset;
-
-	bool bIsVisible = true;
-	ETurboSequence_IsVisibleOverride_Lf EIsVisibleOverride = ETurboSequence_IsVisibleOverride_Lf::Default;
-	ETurboSequence_IsAnimatedOverride_Lf EIsAnimatedOverride = ETurboSequence_IsAnimatedOverride_Lf::Default;
-	uint8 CurrentGPUMeshIndex = GET0_NUMBER;
-
-	TArray<FAnimationMetaData_RenderThread_Lf> AnimationMetaData_RenderThread;
-
-	bool bIKDataInUse = false;
-	TMap<uint16, FIKBoneData_Lf> IKData;
-
-protected:
-	int32 MeshID = GET0_NUMBER;
-
-public:
-	FORCEINLINE int32 GetMeshID() const
-	{
-		return MeshID;
-	}
+	FAttachmentMeshHandle AttachmentHandle;
+	FTurboSequenceRenderHandle RenderHandle;
 };
 
 USTRUCT()
-struct TURBOSEQUENCE_LF_API FSkinnedMeshRuntime_Lf : public FSkinnedMeshRuntime_RenderThread_Lf
+struct TURBOSEQUENCE_LF_API FSkinnedMeshRuntime_Lf 
 {
 	GENERATED_BODY()
 
@@ -569,31 +290,14 @@ struct TURBOSEQUENCE_LF_API FSkinnedMeshRuntime_Lf : public FSkinnedMeshRuntime_
 	{
 	}
 
-	~FSkinnedMeshRuntime_Lf()
+	explicit FSkinnedMeshRuntime_Lf(const FBaseSkeletalMeshHandle InMeshID,
+	                                const TObjectPtr<UTurboSequence_MeshAsset_Lf> Asset, const FTurboSequenceRenderHandle InRenderHandle,const int32 InBoneTextureSkeletonIndex )
 	{
-	}
-
-	explicit FSkinnedMeshRuntime_Lf(const TMap<int32, FSkinnedMeshRuntime_Lf>& InputCollection,
-	                                const TObjectPtr<UTurboSequence_MeshAsset_Lf> Asset)
-	{
-		MeshID = FMath::RandRange(0, INT32_MAX - 1);
-		MeshID++;
-		while (InputCollection.Contains(MeshID) || (!InputCollection.Contains(MeshID) && MeshID < GET0_NUMBER))
-		{
-			MeshID = FMath::RandRange(0, INT32_MAX - 1);
-			MeshID++;
-		}
-
+		MeshID = InMeshID;
 		DataAsset = Asset;
+		RenderHandle = InRenderHandle;
+		BoneTextureSkeletonIndex = InBoneTextureSkeletonIndex;
 	}
-
-	// uint32 SetHash(uint32 SecurityIndex) const
-	// {
-	// 	uint32 Hash = GET0_NUMBER;
-	// 	Hash = HashCombine(Hash, GetTypeHash(FGuid::NewGuid()));
-	// 	Hash = HashCombine(Hash, GetTypeHash(SecurityIndex));
-	// 	return Hash;
-	// }
 
 	FORCEINLINE bool operator==(const FSkinnedMeshRuntime_Lf& Rhs) const
 	{
@@ -605,36 +309,45 @@ struct TURBOSEQUENCE_LF_API FSkinnedMeshRuntime_Lf : public FSkinnedMeshRuntime_
 		return !(*this == Rhs);
 	}
 
+	bool RemoveAttachedParticle(UNiagaraComponent* NiagaraComponent, bool bDestroy = true);
+
+	FBaseSkeletalMeshHandle MeshID;
+	
+	UPROPERTY()
+	TObjectPtr<UTurboSequence_MeshAsset_Lf> DataAsset;
+
+	FTurboSequenceRenderHandle RenderHandle;
+
+	bool bIsVisible = true;
+
+	TMap<uint16, FOverrideBoneTransform_Lf> OverrideBoneTransforms;
+
+	int32 BoneTextureSkeletonIndex = INDEX_NONE;
+	
 	FTransform WorldSpaceTransform = FTransform::Identity;
 
+	TArray<FSkinnedMeshAttachmentRuntime> Attachments;
+
+	TArray<TObjectPtr<UNiagaraComponent>> AttachedParticles;
+	
+	int32 GetAnimIndex(FAnimationMetaDataHandle AnimationMetaDataHandle ) const;
+	const FAnimationMetaData_Lf* GetAnimMetaData(FAnimationMetaDataHandle AnimationMetaDataHandle) const;
+	FAnimationMetaData_Lf* GetAnimMetaData(FAnimationMetaDataHandle AnimationMetaDataHandle);
+
+	FAttachmentMeshHandle AddAttachment(FTurboSequenceRenderHandle TurboSequenceRenderHandle);
+
+	void AddAttachedParticle(TObjectPtr<UNiagaraComponent> NiagaraComponent);
+	void RemoveAllAttachedParticles(bool bDestroy = true);
+
+	bool bAnimTickEnabled = true;
+	
+	uint32 LastAnimationID = 0; //Ensures FAnimationMetaData_Lf AnimationMetaData gets a unique id
 	TArray<FAnimationMetaData_Lf> AnimationMetaData;
-	// < Animation ID | Animation Index >
-	TMap<uint32, int32> AnimationIDs;
-
-	// < Animation Group Layer Hash | Animation Group >
-	TMap<uint32, FAnimationGroup_Lf> AnimationGroups;
-
+	
 	TMap<TObjectPtr<UBlendSpace>, FAnimationBlendSpaceData_Lf> AnimationBlendSpaceMetaData;
 
-	int16 LodIndex = GET0_NUMBER;
-	bool bIsDistanceUpdatingThisFrame = true;
-
-	float ClosestCameraDistance = GET0_NUMBER;
-	float DeltaTimeAccumulator = GET0_NUMBER;
-
-	uint32 MaterialsHash = GET0_NUMBER;
-
-	bool bForceVisibilityUpdatingThisFrame = false;
-
-	int64 LastFrameAnimationSolved = GET0_NUMBER;
-
-	UPROPERTY()
-	TObjectPtr<UTurboSequence_FootprintAsset_Lf> FootprintAsset;
-
-	UPROPERTY()
-	TObjectPtr<AActor> HybridMeshInstance;
-
-	bool bSpawnedHybridActor = false;
+	int64 LastFrameAnimationSolved = 0;
+	
 };
 
 
@@ -647,45 +360,8 @@ struct TURBOSEQUENCE_LF_API FAnimationBlendLayerMask_Lf
 {
 	GENERATED_BODY()
 
-	// We need a way to track how many animations are using this animation layer
-	int32 AnimationLayerCounter = GET0_NUMBER;
-
-	// < Skeleton Layer of Max CPU Bones * 0xFF >
+	// < Skeleton Layer of Max CPU Bones * 0xFFFF >
 	TArray<uint16> RawAnimationLayers;
-
-	// After Creating the Layer, We can Hash the Value
-	// < Hash >
-	uint32 AnimationLayerHash = GET0_NUMBER;
-};
-
-USTRUCT()
-struct TURBOSEQUENCE_LF_API FAsyncTextureGenerationChunk_Lf
-{
-	GENERATED_BODY()
-
-	TArray<FUintVector3> LodDimensions;
-
-	int32 NumPixelsPerIteration = GET0_NUMBER;
-
-	int32 NumPixelsComputed = GET0_NUMBER;
-
-	TMap<int32, bool> TestValue;
-
-	UPROPERTY()
-	TObjectPtr<UTurboSequence_MeshAsset_Lf> DataAsset;
-
-
-	FORCEINLINE void Init(const TObjectPtr<UTextureRenderTarget2DArray> Tex, int32 MaxPixelIndex,
-	                      int16 NumRowsFree, int16 Index)
-	{
-		int32 CeilRows = FMath::CeilToInt(
-			static_cast<float>(LodDimensions[Index].X + MaxPixelIndex) / static_cast<float>(Tex->SizeY)) + NumRowsFree;
-		int32 ChunkSizeY = CeilRows * Tex->SizeX;
-
-		LodDimensions[Index].Z = CeilRows;
-
-		LodDimensions[Index].Y = ChunkSizeY;
-	}
 };
 
 
@@ -696,36 +372,14 @@ struct TURBOSEQUENCE_LF_API FSkinnedMeshGlobalLibrary_RenderThread_Lf
 
 	FSkinnedMeshGlobalLibrary_RenderThread_Lf()
 	{
-		SkinWeightParams = FSettingsComputeShader_Params_Lf();
 		BoneTransformParams = FMeshUnitComputeShader_Params_Lf();
 		AnimationLibraryParams = FSettingsComputeShader_Params_Lf();
 	}
-
-	~FSkinnedMeshGlobalLibrary_RenderThread_Lf()
-	{
-	}
-
-
-	FSettingsComputeShader_Params_Lf SkinWeightParams;
+	
 	FMeshUnitComputeShader_Params_Lf BoneTransformParams;
-
 	FSettingsComputeShader_Params_Lf AnimationLibraryParams;
-
-	uint32 NumMeshesVisibleCurrentFrame = GET0_NUMBER;
-	uint32 NumIKPixelCurrentFrame = GET0_NUMBER;
-	uint32 NumAnimationsCurrentFrame = GET0_NUMBER;
-
-	TMap<int32, FSkinnedMeshRuntime_RenderThread_Lf> RuntimeSkinnedMeshes;
-	TArray<int32> RuntimeSkinnedMeshesHashMap;
-
-	uint32 AnimationLibraryMaxNum = GET0_NUMBER;
-
-	// < MeshID | Index >
-	TMap<int32, int32> MeshIDToGlobalIndex;
-
-	TMap<TObjectPtr<UTurboSequence_MeshAsset_Lf>, FSkinnedMeshReference_RenderThread_Lf> PerReferenceData;
-	UPROPERTY()
-	TArray<TObjectPtr<UTurboSequence_MeshAsset_Lf>> PerReferenceDataKeys;
+	
+	uint32 AnimationLibraryMaxNum = 0;
 };
 
 
@@ -734,27 +388,19 @@ struct TURBOSEQUENCE_LF_API FSkinnedMeshGlobalLibrary_Lf
 {
 	GENERATED_BODY()
 
-	FSkinnedMeshGlobalLibrary_Lf()
-	{
-	}
+	FSkinnedMeshGlobalLibrary_Lf() {}
 
-	~FSkinnedMeshGlobalLibrary_Lf()
-	{
-	}
-
-	TMap<int32, FSkinnedMeshRuntime_Lf> RuntimeSkinnedMeshes;
-	TArray<int32> RuntimeSkinnedMeshesHashMap;
-	// < MeshID | Data >
-	TMap<int32, FTurboSequence_MinimalMeshData_Lf> MeshIDToMinimalData;
-
-	TMap<TObjectPtr<UTurboSequence_MeshAsset_Lf>, FSkinnedMeshReference_Lf> PerReferenceData;
+	int32 GlobalMeshCounter = 0; //Used to generate unique FTurboSequenceMeshHandle globally
 
 	UPROPERTY()
-	TArray<TObjectPtr<UTurboSequence_MeshAsset_Lf>> PerReferenceDataKeys;
-
+	TMap<FTurboSequenceRenderHandle, UTurboSequence_RenderData*> PerReferenceData;
+	
+	UPROPERTY()
+	TArray<TObjectPtr<UTurboSequence_MeshAsset_Lf>> PerReferenceDataKeys; //The order we upload asset meshes on the gpu
+	
 	// -> Key -> < USkeleton | UTurboSequence_MeshAsset_Lf | UAnimSequence >
 	TMap<FUintVector, FAnimationLibraryData_Lf> AnimationLibraryData;
-	uint32 AnimationLibraryMaxNum = GET0_NUMBER;
+	uint32 AnimationLibraryMaxNum = 0;
 	TArray<FVector4f> AnimationLibraryDataAllocatedThisFrame;
 	// // Sum of -> ( Values * Library Hash, Mesh Bones ) is the Keyframe index
 	// // We need this construct to easy determinate the index when we remove an animation from the GPU
@@ -763,19 +409,21 @@ struct TURBOSEQUENCE_LF_API FSkinnedMeshGlobalLibrary_Lf
 
 	TArray<FCameraView_Lf> CameraViews;
 
-	TArray<FAnimationBlendLayerMask_Lf> AnimationBlendLayerMasks;
-	// Contains the Runtime ID which is having dirty Animation Data
-	TMap<FUintVector2, bool> AnimationBlendLayerMasksRuntimeDirty;
+	//Masks
+	bool bMasksNeedRebuilding = false;
+	int32 MasksBuiltBoneCount = -1; //Masks are added to AnimationLayers_RenderThread, separated by MaxNumCPUBones, need to rebuild when that changes 
+	TMap<FBoneMaskBuiltProxyHandle, int32> MaskRefCount; //Ref count 
+	TMap<FBoneMaskBuiltProxyHandle, FAnimationBlendLayerMask_Lf> AnimationBlendLayerMasks; //Currently in use built masks 
 
-	uint16 MaxNumCPUBones = GET0_NUMBER;
-	uint16 MaxNumGPUBones = GET0_NUMBER;
-	uint16 MaxNumLevelOfDetailsWithMesh = GET0_NUMBER;
-	bool bMaxNumCPUBonesChanged = false;
-
-	TArray<FTurboSequence_UpdateGroup_Lf> UpdateGroups;
+	TMap<FBoneMaskBuiltProxyHandle, int32> ProxyToIndex; //Order added to AnimationLayers_RenderThread
+	
+	int32 MaxNumCPUBones = 0;
+	int32 MaxNumGPUBones = 0;
 
 	// < MeshID | Index >
-	TMap<int32, int32> MeshIDToGlobalIndex;
-
-	int16 NumGroupsUpdatedThisFrame = GET0_NUMBER;
+	TMap<FBaseSkeletalMeshHandle, FSkinnedMeshRuntime_Lf> RuntimeSkinnedMeshes; //Skeleton to runtime
+	
+	TBestFitAllocator<8, 512 * 512 > BoneTextureAllocator;
+	
+	bool bRefreshAsyncChunkedMeshData = false;
 };

@@ -2,26 +2,18 @@
 
 #include "/Engine/Public/Platform.ush"
 
-uint NumMeshesPerThread;
-uint NumFirstGPUBones;
+//#define EVALUATION_PARENT_CACHE_SIZE 4
+#define NUM_GPU_TEXTURE_BONE_BUFFER 3
 
 uint NumCPUBones;
 uint NumMeshesPerFrame;
-
-
 uint AnimTextureSizeX;
 uint AnimTextureSizeY;
 
 uint OutputTextureSizeX;
 uint OutputTextureSizeY;
 
-uint NumLevelOfDetails;
 uint NumDebugBuffer;
-
-uint NumPixelBuffer;
-uint NumCustomStates;
-
-//uint NumCustomDataPixels;
 
 StructuredBuffer<float4> ReferencePose_StructuredBuffer;
 StructuredBuffer<float4> ReferencePoseIndices_StructuredBuffer;
@@ -31,7 +23,6 @@ StructuredBuffer<min16int> BoneSpaceAnimationDataInput_StructuredBuffer;
 StructuredBuffer<int> BoneSpaceAnimationDataStartIndex_StructuredBuffer;
 StructuredBuffer<min16int> BoneSpaceAnimationDataEndIndex_StructuredBuffer; // Start Index + End Index = Real End Index
 StructuredBuffer<int> PerMeshCustomDataIndices_StructuredBuffer;
-StructuredBuffer<min16int> PerMeshCustomDataLod_StructuredBuffer;
 StructuredBuffer<min16uint> PerMeshCustomDataCollectionIndex_StructuredBuffer;
 StructuredBuffer<min16uint> ReferenceNumCPUBones_StructuredBuffer;
 
@@ -462,6 +453,11 @@ float AnimationCodecTimeToIndex(
 }
 
 // -> Licence End
+#define UE_SMALL_NUMBER			(1.e-8f)
+bool IsNearlyZero(float Value, float ErrorTolerance = UE_SMALL_NUMBER)
+{
+	return abs( Value ) <= ErrorTolerance;
+}
 
 float3x4 BendBoneFromAnimations_Full(in uint BoneIndexCPU, in int AnimStartIndex, in int AnimEndIndex)
 {
@@ -471,26 +467,24 @@ float3x4 BendBoneFromAnimations_Full(in uint BoneIndexCPU, in int AnimStartIndex
 	float FullScalarWeight = 0;
 	for (int DataIdx = AnimStartIndex; DataIdx < AnimEndIndex; ++DataIdx)
 	{
-		uint LayerLibraryBaseIndex = AnimationLayerIndex_StructuredBuffer[DataIdx];
-		uint LayerLibraryIndex = LayerLibraryBaseIndex * NumCPUBones + BoneIndexCPU;
+		const uint LayerLibraryBaseIndex = AnimationLayerIndex_StructuredBuffer[DataIdx];
+		const uint LayerLibraryIndex = LayerLibraryBaseIndex * NumCPUBones + BoneIndexCPU;
 
-		float LayerWeight = (float)AnimationLayerLibrary_StructuredBuffer[LayerLibraryIndex] / (float)0x7FFF;
+		const float LayerWeight = (float)AnimationLayerLibrary_StructuredBuffer[LayerLibraryIndex] / (float)0x7FFF;
 
-		float Weight = (float)AnimationWeight_StructuredBuffer[DataIdx] / (float)0x7FFF;
+		const float Weight = (float)AnimationWeight_StructuredBuffer[DataIdx] / (float)0x7FFF;
 
 		float Scalar = clamp(Weight * LayerWeight, 0.0f, 1.0f);
-		FullScalarWeight += Scalar;
-		if (FullScalarWeight > 1)
-		{
-			Scalar -= abs(1.0f - FullScalarWeight);
-		}
 
-		if (!Scalar)
+		Scalar = min(Scalar, 1 - FullScalarWeight);
+		
+		FullScalarWeight += Scalar;
+		
+		if (IsNearlyZero(Scalar))
 		{
 			continue;
 		}
-
-
+		
 		uint AnimationOffset0 = AnimationFramePose0_StructuredBuffer[DataIdx];
 		uint AnimationOffset1 = AnimationFramePose1_StructuredBuffer[DataIdx];
 
@@ -568,174 +562,129 @@ float3x4 BendBoneFromAnimations_Full(in uint BoneIndexCPU, in int AnimStartIndex
 	return OutAtom.M;
 }
 
-
 [numthreads(THREADS_X, THREADS_Y, THREADS_Z)]
-void Main(
-	uint GroupIndex : SV_GroupIndex
-)
-{
-	RW_BoneTransform_OutputTexture[uint3(0, 0, 0)] = float4(0,
-	                                                        0,
-	                                                        NumCustomStates,
-	                                                        NumPixelBuffer);
-	RW_BoneTransform_OutputTexture[uint3(1, 0, 0)] = float4(0,
-	                                                        0,
-	                                                        OutputTextureSizeX,
-	                                                        OutputTextureSizeY);
+ void Main(
+ 	uint GroupIndex : SV_GroupIndex,
+ 	uint3 GroupID : SV_GroupID,
+ 	uint3 DispatchThreadID : SV_DispatchThreadID
+ )
+ {
+	const uint MeshIndex = DispatchThreadID.x;
 
-	RW_BoneTransformPrevious_OutputTexture[uint3(0, 0, 0)] = float4(0,
-	                                                                0,
-	                                                                NumCustomStates,
-	                                                                NumPixelBuffer);
-	RW_BoneTransformPrevious_OutputTexture[uint3(1, 0, 0)] = float4(0,
-	                                                                0,
-	                                                                OutputTextureSizeX,
-	                                                                OutputTextureSizeY);
+ 	if (MeshIndex >= NumMeshesPerFrame)
+ 	{
+ 		return;
+ 	}
+	
+    const uint CPUMeshIndex = PerMeshCustomDataIndices_StructuredBuffer[MeshIndex];
+	
+    const int IKDataIndexStart = BoneSpaceAnimationDataStartIndex_StructuredBuffer[MeshIndex];
+    const int IKDataIndexEnd = IKDataIndexStart + BoneSpaceAnimationDataEndIndex_StructuredBuffer[MeshIndex];
 
-	uint ThreadIndex = GroupIndex * NumMeshesPerThread;
-	if (ThreadIndex >= NumMeshesPerFrame)
-	{
-		return;
-	}
+    const int AnimStartIndex = AnimationStartIndex_StructuredBuffer[MeshIndex];
+    const int AnimEndIndex = AnimStartIndex + AnimationEndIndex_StructuredBuffer[MeshIndex];
 
-	for (uint MeshIndex = 0; MeshIndex < NumMeshesPerThread; ++MeshIndex)
-	{
-		uint LocalMeshIndex = ThreadIndex + MeshIndex;
+    const uint ReferenceIndex = PerMeshCustomDataCollectionIndex_StructuredBuffer[MeshIndex];
 
-		if (LocalMeshIndex >= NumMeshesPerFrame)
-		{
-			return;
-		}
-		uint LocalMeshData = LocalMeshIndex; // Change here to global if you ever need it again
-		min16int LodIndex = PerMeshCustomDataLod_StructuredBuffer[LocalMeshData];
-		if (LodIndex < 0)
-		{
-			continue;
-		}
+    const uint ReferencePoseStartIndex = ReferenceIndex * 1 * NumCPUBones + 0 * NumCPUBones;
+    const uint ReferencePoseEndIndex = ReferencePoseStartIndex + NumCPUBones;
 
-		uint CPUMeshIndex = PerMeshCustomDataIndices_StructuredBuffer[LocalMeshData];
+    const uint InvRestPoseStartIndex = ReferenceIndex * NumCPUBones * 3;
 
-		uint CurrentTextureIndex = CPUMeshIndex * NumFirstGPUBones * NumPixelBuffer + 2;
+	float3x4 BoneMatrix = GetIdentity_Matrix_3x4();
 
-		int IKDataIndexStart = BoneSpaceAnimationDataStartIndex_StructuredBuffer[LocalMeshData];
-		int IKDataIndexEnd = IKDataIndexStart + BoneSpaceAnimationDataEndIndex_StructuredBuffer[LocalMeshData];
+	float3x4 ParentCache[EVALUATION_PARENT_CACHE_SIZE];
+ 	
+ 	int FallbackIndex = NumCPUBones + 1;
+ 	for (uint ReferencePoseBoneIndex = ReferencePoseStartIndex; ReferencePoseBoneIndex < ReferencePoseEndIndex; ++ReferencePoseBoneIndex)
+ 	{
+ 		FallbackIndex--;
+ 		if (FallbackIndex < 0)
+ 		{
+ 			break;
+ 		}
 
-		int AnimStartIndex = AnimationStartIndex_StructuredBuffer[LocalMeshData];
-		int AnimEndIndex = AnimStartIndex + AnimationEndIndex_StructuredBuffer[LocalMeshData];
+ 		const float4 ReferenceIndices = ReferencePoseIndices_StructuredBuffer[ReferencePoseBoneIndex];
+ 		// X = CPU Index
+ 		// Y = GPU Index 
+ 		// Z = GPUParentCacheRead
+ 		// W = GPUParentCacheWrite
 
+ 		const int CPUBoneIndex = (int)ReferenceIndices.x; 
+ 		const int GPUIndex = (int)ReferenceIndices.y;
+ 		const int GPUParentCacheRead = (int)ReferenceIndices.z;
+ 		const int GPUParentCacheWrite = (int)ReferenceIndices.w;
+ 		
+ 		// Is not part of this Rig and the last bone pass already
+ 		if (CPUBoneIndex < 0)
+ 		{
+ 			break;
+ 		}
 
-		uint ReferenceIndex = PerMeshCustomDataCollectionIndex_StructuredBuffer[LocalMeshData];
+ 		if( GPUParentCacheRead == -1 )
+ 		{
+ 			BoneMatrix = GetIdentity_Matrix_3x4();
+ 		}
+ 		else if (GPUParentCacheRead > 0)
+	    {
+ 			BoneMatrix = ParentCache[GPUParentCacheRead -1];
+	    }
+ 		
+	    const uint GPUBoneIndexBase = CPUMeshIndex + GPUIndex * NUM_GPU_TEXTURE_BONE_BUFFER;
 
-		uint ReferencePoseStartIndex = ReferenceIndex * NumLevelOfDetails * NumCPUBones + (uint)LodIndex * NumCPUBones;
-		uint ReferencePoseEndIndex = ReferencePoseStartIndex + NumCPUBones;
+	    const uint3 Row0UV = GetDimensionsFromIndex3D(GPUBoneIndexBase, OutputTextureSizeX, OutputTextureSizeY);
+	    const uint3 Row1UV = GetDimensionsFromIndex3D(GPUBoneIndexBase + 1, OutputTextureSizeX, OutputTextureSizeY);
+	    const uint3 Row2UV = GetDimensionsFromIndex3D(GPUBoneIndexBase + 2, OutputTextureSizeX, OutputTextureSizeY);
 
-		uint InvRestPoseStartIndex = ReferenceIndex * NumCPUBones * 3;
+ 		//Copy last frame to this frame
+ 		RW_BoneTransformPrevious_OutputTexture[Row0UV] = R_BoneTransform_OutputTexture[Row0UV];
+ 		RW_BoneTransformPrevious_OutputTexture[Row1UV] = R_BoneTransform_OutputTexture[Row1UV];
+ 		RW_BoneTransformPrevious_OutputTexture[Row2UV] = R_BoneTransform_OutputTexture[Row2UV];
+ 		
+ 		// Handle IK
+ 		bool bIsBoneSolvedByIK = false;
 
-		int FallbackIndex = NumCPUBones + 1;
-		for (uint B = ReferencePoseStartIndex; B < ReferencePoseEndIndex; ++B)
-		{
-			FallbackIndex--;
-			if (FallbackIndex < 0)
-			{
-				break;
-			}
-
-
-			// x -> CPU
-			// y -> GPU
-			// z -> Parent
-			// w -> Reserved
-			float4 ReferenceIndices = ReferencePoseIndices_StructuredBuffer[B];
-
-			// Is not part of this Rig and the last bone pass already
-			if (ReferenceIndices.x < -0.5f)
-			{
-				break;
-			}
-
-			// Is not part of the Mesh
-			if (ReferenceIndices.y < -0.5f)
-			{
-				continue;
-			}
-			uint CPUBoneIndex = (uint)ReferenceIndices.x;
-
-			float3x4 BoneMatrix = GetIdentity_Matrix_3x4();
-
-			int FallbackAnimationIndex = 2 * NumCPUBones + 1;
-			int RuntimeIndexCPU = CPUBoneIndex;
-			while (RuntimeIndexCPU > -1 && FallbackAnimationIndex > 0)
-			{
-				uint BonePoseIndex = ReferencePoseStartIndex + RuntimeIndexCPU;
-				int RuntimeIndexGPU = (int)ReferencePoseIndices_StructuredBuffer[BonePoseIndex].y;
-
-				// Handle IK
-				if (RuntimeIndexGPU > -1)
-				{
-					bool bIsBoneSolvedByIK = false;
-					for (int IKIdx = IKDataIndexStart; IKIdx < IKDataIndexEnd; ++IKIdx)
-					{
-						if (BoneSpaceAnimationDataInput_StructuredBuffer[IKIdx] == RuntimeIndexGPU)
-						{
-							int IKBoneIndex = IKIdx * 3;
-							float3x4 IKBoneMatrix = float3x4(
-								BoneSpaceAnimationInput_StructuredBuffer[IKBoneIndex],
-								BoneSpaceAnimationInput_StructuredBuffer[IKBoneIndex + 1],
-								BoneSpaceAnimationInput_StructuredBuffer[IKBoneIndex + 2]
-							);
-
-							BoneMatrix = MatrixMultiply_3x4(IKBoneMatrix, BoneMatrix);
-
-							bIsBoneSolvedByIK = true;
-							break;
-						}
-					}
-					if (bIsBoneSolvedByIK)
-					{
-						break;
-					}
-				}
-
-				BoneMatrix = MatrixMultiply_3x4(
-					BendBoneFromAnimations_Full(RuntimeIndexCPU, AnimStartIndex, AnimEndIndex),
-					BoneMatrix);
-
-				RuntimeIndexCPU = (int)ReferencePoseIndices_StructuredBuffer[BonePoseIndex].z;
-
-				// When ReferencePoseParentIndices_StructuredBuffer is uninitialized we may never exit the loop.
-				// That's why we count down to the max amount of data as fallback.
-				FallbackAnimationIndex--;
-			}
-
-			uint CPUBoneIndexBase = InvRestPoseStartIndex + CPUBoneIndex * 3;
-			float3x4 InvRestPoseMatrix = float3x4(ReferencePose_StructuredBuffer[CPUBoneIndexBase],
-			                                      ReferencePose_StructuredBuffer[CPUBoneIndexBase + 1],
-			                                      ReferencePose_StructuredBuffer[CPUBoneIndexBase + 2]);
-
-			BoneMatrix = MatrixMultiply_3x4(BoneMatrix, InvRestPoseMatrix);
+ 		for (int IKIdx = IKDataIndexStart; IKIdx < IKDataIndexEnd; ++IKIdx)
+ 		{
+ 			if (BoneSpaceAnimationDataInput_StructuredBuffer[IKIdx] == GPUIndex)
+ 			{
+			    const int IKBoneIndex = IKIdx * 3;
+			    const float3x4 IKBoneMatrix = float3x4(
+ 					BoneSpaceAnimationInput_StructuredBuffer[IKBoneIndex],
+ 					BoneSpaceAnimationInput_StructuredBuffer[IKBoneIndex + 1],
+ 					BoneSpaceAnimationInput_StructuredBuffer[IKBoneIndex + 2]
+ 				);
+ 	
+ 				BoneMatrix = IKBoneMatrix;
+ 	
+ 				bIsBoneSolvedByIK = true;
+ 				break;
+ 			}
+ 		}
 
 
-			uint GPUBoneIndexBase = CurrentTextureIndex + (uint)ReferenceIndices.y * NumPixelBuffer;
+ 		if(!bIsBoneSolvedByIK)
+ 		{
+ 			BoneMatrix = MatrixMultiply_3x4(BoneMatrix,BendBoneFromAnimations_Full(CPUBoneIndex, AnimStartIndex, AnimEndIndex));
+ 		}
+ 		
+ 		if(GPUParentCacheWrite > 0)
+ 		{
+ 			ParentCache[GPUParentCacheWrite - 1] = BoneMatrix;
+ 		}
 
-			RW_BoneTransformPrevious_OutputTexture[GetDimensionsFromIndex3D(GPUBoneIndexBase, OutputTextureSizeX,
-			                                                                OutputTextureSizeY)] =
-				R_BoneTransform_OutputTexture[GetDimensionsFromIndex3D(GPUBoneIndexBase, OutputTextureSizeX,
-				                                                       OutputTextureSizeY)];
-			RW_BoneTransformPrevious_OutputTexture[GetDimensionsFromIndex3D(GPUBoneIndexBase + 1, OutputTextureSizeX,
-			                                                                OutputTextureSizeY)] =
-				R_BoneTransform_OutputTexture[GetDimensionsFromIndex3D(GPUBoneIndexBase + 1, OutputTextureSizeX,
-				                                                       OutputTextureSizeY)];
-			RW_BoneTransformPrevious_OutputTexture[GetDimensionsFromIndex3D(GPUBoneIndexBase + 2, OutputTextureSizeX,
-			                                                                OutputTextureSizeY)] =
-				R_BoneTransform_OutputTexture[GetDimensionsFromIndex3D(GPUBoneIndexBase + 2, OutputTextureSizeX,
-				                                                       OutputTextureSizeY)];
+ 		//multiply by InvRestPoseMatrix
+ 		const uint CPUBoneIndexBase = InvRestPoseStartIndex + CPUBoneIndex * 3;
 
-			RW_BoneTransform_OutputTexture[GetDimensionsFromIndex3D(GPUBoneIndexBase, OutputTextureSizeX,
-			                                                        OutputTextureSizeY)] = BoneMatrix[0];
-			RW_BoneTransform_OutputTexture[GetDimensionsFromIndex3D(GPUBoneIndexBase + 1, OutputTextureSizeX,
-			                                                        OutputTextureSizeY)] = BoneMatrix[1];
-			RW_BoneTransform_OutputTexture[GetDimensionsFromIndex3D(GPUBoneIndexBase + 2, OutputTextureSizeX,
-			                                                        OutputTextureSizeY)] = BoneMatrix[2];
-		}
-	}
-}
+ 		const float3x4 InvRestPoseMatrix = float3x4(ReferencePose_StructuredBuffer[CPUBoneIndexBase],
+													 ReferencePose_StructuredBuffer[CPUBoneIndexBase + 1],
+													 ReferencePose_StructuredBuffer[CPUBoneIndexBase + 2]);
+
+ 		const float3x4 BoneMatrixInvRest = MatrixMultiply_3x4(BoneMatrix, InvRestPoseMatrix);
+			
+ 		//Store bone matrix
+ 		RW_BoneTransform_OutputTexture[Row0UV] = BoneMatrixInvRest[0];
+ 		RW_BoneTransform_OutputTexture[Row1UV] = BoneMatrixInvRest[1];
+ 		RW_BoneTransform_OutputTexture[Row2UV] = BoneMatrixInvRest[2];
+ 	}
+ }

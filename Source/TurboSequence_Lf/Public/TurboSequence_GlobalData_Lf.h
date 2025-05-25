@@ -4,12 +4,10 @@
 
 #include "CoreMinimal.h"
 #include "TurboSequence_ComputeShaders_Lf.h"
-#include "TurboSequence_Helper_Lf.h"
-#include "AssetRegistry/AssetRegistryModule.h"
-#include "Engine/DataAsset.h"
-#include "Engine/TextureRenderTarget2DArray.h"
+
 #include "TurboSequence_GlobalData_Lf.generated.h"
 
+class UTextureRenderTarget2DArray;
 /**
  * 
  */
@@ -40,7 +38,7 @@ public:
 	FName NameNiagaraParticleScales = FName("User.Particle_Scale");
 
 	UPROPERTY(EditAnywhere)
-	FName NameNiagaraLevelOfDetailIndex = FName("User.LevelOfDetail_Index");
+	FName NameNiagaraFlags = FName("User.Particle_Flags");
 	
 	UPROPERTY(EditAnywhere)
 	FName NameNiagaraCustomData = FName("User.CustomData");
@@ -50,10 +48,7 @@ public:
 
 	UPROPERTY(EditAnywhere)
 	TObjectPtr<UTextureRenderTarget2DArray> TransformTexture_PreviousFrame;
-
-	UPROPERTY(EditAnywhere)
-	TObjectPtr<UTextureRenderTarget2DArray> SkinWeightTexture;
-
+	
 	UPROPERTY(EditAnywhere)
 	TObjectPtr<UTextureRenderTarget2DArray> AnimationLibraryTexture;
 

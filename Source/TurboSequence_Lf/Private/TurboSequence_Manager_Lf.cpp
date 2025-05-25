@@ -3,11 +3,15 @@
 
 #include "TurboSequence_Manager_Lf.h"
 
+#include "NiagaraComponent.h"
 #include "NiagaraDataInterfaceArrayFunctionLibrary.h"
 #include "TurboSequence_ComputeShaders_Lf.h"
-#include "TurboSequence_Lf.h"
+#include "TurboSequence_GlobalData_Lf.h"
+#include "TurboSequence_RenderData.h"
+#include "TurboSequence_Utility_Lf.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-//#include "Kismet/KismetRenderingLibrary.h"
+#include "Engine/SkeletalMeshSocket.h"
+#include "NiagaraFunctionLibrary.h"
 
 
 DECLARE_STATS_GROUP(TEXT("TurboSequenceManager_Lf"), STATGROUP_TurboSequenceManager_Lf, STATCAT_Advanced);
@@ -16,121 +20,98 @@ DECLARE_CYCLE_STAT(TEXT("Solve_TurboSequenceMeshes_Lf"), STAT_Solve_TurboSequenc
                    STATGROUP_TurboSequenceManager_Lf);
 DECLARE_CYCLE_STAT(TEXT("Add_TurboSequenceMeshInstances_Lf"), Add_TurboSequenceMeshInstances_Lf,
                    STATGROUP_TurboSequenceManager_Lf);
+DECLARE_CYCLE_STAT(TEXT("Remove_TurboSequenceMeshInstances_Lf"), Remove_TurboSequenceMeshInstances_Lf,
+				   STATGROUP_TurboSequenceManager_Lf);
+DECLARE_CYCLE_STAT(TEXT("Solve_TurboSequenceMeshes_RT_Lf"), STAT_Solve_TurboSequenceMeshes_RT_Lf,
+				   STATGROUP_TurboSequenceManager_Lf);
 
+DECLARE_DWORD_COUNTER_STAT(TEXT("Total Mesh Count"), STAT_TotalMeshCount, STATGROUP_TurboSequenceManager_Lf);
+DECLARE_DWORD_COUNTER_STAT(TEXT("Visible Mesh Count"), STAT_VisibleMeshCount, STATGROUP_TurboSequenceManager_Lf);
+
+TObjectPtr<UTurboSequence_MeshAsset_Lf> ATurboSequence_Manager_Lf::AttachmentAsset;
+
+
+FTurboSequenceRenderHandle::FTurboSequenceRenderHandle(const TArray<UMaterialInterface*>& OverrideMaterials,
+                                                       const UNiagaraSystem* InSystem, const UStaticMesh* InStaticMesh, const bool bRenderInCustomDepth, const int32 StencilValue, const bool bInReceivesDecals, FLightingChannels LightingChannels)
+{
+	const int32 MeshMaterialCount = InStaticMesh->GetStaticMaterials().Num();
+	//Can't override more materials than the mesh has
+	const int32 MaterialsToCheck = FMath::Min(MeshMaterialCount, OverrideMaterials.Num()); 
+
+	for (int32 MaterialIndex = 0; MaterialIndex < MaterialsToCheck; ++MaterialIndex)
+	{
+		Hash = HashCombine(Hash,GetTypeHash(OverrideMaterials[MaterialIndex]));
+	}
+	
+	Hash = HashCombine(Hash,GetTypeHash(InSystem));
+	Hash = HashCombine(Hash,GetTypeHash(InStaticMesh));
+	Hash = HashCombine(Hash,GetTypeHash(bInReceivesDecals));
+
+	Hash = HashCombine(Hash,GetTypeHash(LightingChannels.bChannel0));
+	Hash = HashCombine(Hash,GetTypeHash(LightingChannels.bChannel1));
+	Hash = HashCombine(Hash,GetTypeHash(LightingChannels.bChannel2));
+	
+
+	if(bRenderInCustomDepth)
+	{
+		Hash = HashCombine(Hash,GetTypeHash(StencilValue));
+	}
+}
 
 // Sets default values
 ATurboSequence_Manager_Lf::ATurboSequence_Manager_Lf()
 {
-	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bTickEvenWhenPaused = true;
+	// Allow ticking in the editor when the game is not running
 	PrimaryActorTick.TickGroup = TG_PostUpdateWork;
 
 	// Setup root component
 	Root = CreateDefaultSubobject<USceneComponent>(TEXT("RootComponent"));
 	SetRootComponent(Root);
-}
 
-// Called when the game starts or when spawned
-void ATurboSequence_Manager_Lf::BeginPlay()
-{
-	Super::BeginPlay();
+	if (!AttachmentAsset)
+	{
+		const ConstructorHelpers::FObjectFinder<UTurboSequence_MeshAsset_Lf> AttachmentAssetFinder(TEXT("/TurboSequence_Lf/Resources/TS_AttachmentMeshAsset"));
 
-	//Instance = this;
+		if(AttachmentAssetFinder.Succeeded())
+		{
+			AttachmentAsset = AttachmentAssetFinder.Object;
+		}
+	}
 }
 
 void ATurboSequence_Manager_Lf::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	Super::EndPlay(EndPlayReason);
-
-	for (const TTuple<TObjectPtr<UTurboSequence_FootprintAsset_Lf>, int32>& FootprintAsset : FootprintAssetsInUse)
-	{
-		FootprintAsset.Key->OnManagerEndPlay_GameThread(EndPlayReason);
-	}
-
+	
 	CleanManager_GameThread(true);
 }
 
-// Called every frame
-void ATurboSequence_Manager_Lf::Tick(float DeltaTime)
+bool ATurboSequence_Manager_Lf::ShouldTickIfViewportsOnly() const
 {
-	Super::Tick(DeltaTime);
+	return true;
+}
 
-	for (const TTuple<TObjectPtr<UTurboSequence_FootprintAsset_Lf>, int32>& FootprintAsset : FootprintAssetsInUse)
+// Called every frame
+void ATurboSequence_Manager_Lf::TickActor(float DeltaTime, ELevelTick TickType, FActorTickFunction& ThisTickFunction)
+{
+	Super::TickActor(DeltaTime,TickType,ThisTickFunction);
+
+	UWorld* World = Instance->GetWorld();
+
+	const float Time = TickType == LEVELTICK_All ? DeltaTime : 0.f;
+
+	SolveMeshes_GameThread(Time, World);
+
+	for (const auto & PerReferenceData : GlobalLibrary.PerReferenceData)
 	{
-		FootprintAsset.Key->OnPreManagerUpdated_GameThread(DeltaTime);
-	}
-
-
-	for (TTuple<TObjectPtr<UTurboSequence_MeshAsset_Lf>, FSkinnedMeshReference_Lf>& ReferenceData : GlobalLibrary.
-	     PerReferenceData)
-	{
-		FSkinnedMeshReference_Lf& Reference = ReferenceData.Value;
-
-		if (!IsValid(Reference.DataAsset))
-		{
-			continue;
-		}
-
-		const TObjectPtr<UTurboSequence_MeshAsset_Lf> Asset = Reference.DataAsset;
-
-		for (TTuple<uint32, FRenderData_Lf>& RenderData : Reference.RenderData)
-		{
-			const TObjectPtr<UNiagaraComponent> NiagaraComponent = Instance->NiagaraComponents[Asset].
-				NiagaraRenderer[RenderData.Key].NiagaraRenderer;
+		//PerReferenceData.Value->PrintRenderData();
 			
-			if (RenderData.Value.bChangedLodCollectionThisFrame || RenderData.Value.bChangedCollectionSizeThisFrame)
-			{
-				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayUInt8(
-					NiagaraComponent, RenderData.Value.GetLodName(), RenderData.Value.ParticleLevelOfDetails);
-			}
-
-			if (RenderData.Value.bChangedCustomDataCollectionThisFrame || RenderData.Value.
-				bChangedCollectionSizeThisFrame)
-			{
-				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayFloat(
-					NiagaraComponent, RenderData.Value.GetCustomDataName(), RenderData.Value.ParticleCustomData);
-			}
-
-			if (RenderData.Value.bChangedPositionCollectionThisFrame || RenderData.Value.
-				bChangedCollectionSizeThisFrame)
-			{
-				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayPosition(
-					NiagaraComponent, RenderData.Value.GetPositionName(), RenderData.Value.ParticlePositions);
-			}
-
-			if (RenderData.Value.bChangedRotationCollectionThisFrame || RenderData.Value.
-				bChangedCollectionSizeThisFrame)
-			{
-				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector4(
-					NiagaraComponent, RenderData.Value.GetRotationName(), RenderData.Value.ParticleRotations);
-			}
-
-			if (RenderData.Value.bChangedScaleCollectionThisFrame || RenderData.Value.bChangedCollectionSizeThisFrame)
-			{
-				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector(
-					NiagaraComponent, RenderData.Value.GetScaleName(), RenderData.Value.ParticleScales);
-			}
-
-			RenderData.Value.bChangedLodCollectionThisFrame = false;
-			RenderData.Value.bChangedCustomDataCollectionThisFrame = false;
-			RenderData.Value.bChangedPositionCollectionThisFrame = false;
-			RenderData.Value.bChangedRotationCollectionThisFrame = false;
-			RenderData.Value.bChangedScaleCollectionThisFrame = false;
-
-			RenderData.Value.bChangedCollectionSizeThisFrame = false;
-
-			const FBox RendererBounds = FBox(RenderData.Value.MinBounds, RenderData.Value.MaxBounds);
-			NiagaraComponent->SetEmitterFixedBounds(RenderData.Value.GetEmitterName(), RendererBounds);
-			// The solver is Assigning the new bounds every iteration, we only need to reset it here
-			// but some small objects having visibility bugs when viewed close if the bounds is too small,
-			// so we add a default camera bounds extend to it for the next frame
-			FTurboSequence_Utility_Lf::UpdateCameraRendererBounds(RenderData.Value, GlobalLibrary.CameraViews,
-			                                                      GET100_NUMBER * GET10_NUMBER);
-		}
+		PerReferenceData.Value->UpdateNiagaraEmitter();
 	}
-
-
-	if (GlobalLibrary.NumGroupsUpdatedThisFrame && IsValid(GlobalData) && IsValid(GlobalData->AnimationLibraryTexture))
+	
+	if (GlobalLibrary.RuntimeSkinnedMeshes.Num() && IsValid(GlobalData) && IsValid(GlobalData->AnimationLibraryTexture))
 	{
 		GlobalLibrary_RenderThread.AnimationLibraryParams.ShaderID = GetTypeHash(GlobalData);
 		GlobalLibrary_RenderThread.AnimationLibraryParams.bIsAdditiveWrite = true;
@@ -161,8 +142,9 @@ void ATurboSequence_Manager_Lf::Tick(float DeltaTime)
 			Instance->GlobalData->TransformTexture_CurrentFrame, /*Instance->GlobalData->CustomDataTexture,*/
 			[&](TArray<float>& DebugValue)
 			{
-				if (DebugValue.Num() && !FMath::IsNaN(DebugValue[GET0_NUMBER]) && FMath::IsNearlyEqual(
-					DebugValue[GET0_NUMBER], 777.0f, 0.1f))
+#if TURBO_SEQUENCE_DEBUG_GPU_READBACK
+				if (DebugValue.Num() && !FMath::IsNaN(DebugValue[0]) && FMath::IsNearlyEqual(
+					DebugValue[0], 777.0f, 0.1f))
 				{
 					UE_LOG(LogTurboSequence_Lf, Warning, TEXT(" ----- > Start Stack < -----"))
 					for (float Value : DebugValue)
@@ -171,15 +153,10 @@ void ATurboSequence_Manager_Lf::Tick(float DeltaTime)
 					}
 					UE_LOG(LogTurboSequence_Lf, Warning, TEXT(" ----- > End Stack < -----"))
 				}
+#endif
 			});
 	}
 
-	GlobalLibrary.NumGroupsUpdatedThisFrame = GET0_NUMBER;
-
-	for (const TTuple<TObjectPtr<UTurboSequence_FootprintAsset_Lf>, int32>& FootprintAsset : FootprintAssetsInUse)
-	{
-		FootprintAsset.Key->OnPostManagerUpdated_GameThread(DeltaTime);
-	}
 
 	if (GlobalLibrary.RuntimeSkinnedMeshes.Num())
 	{
@@ -188,1349 +165,840 @@ void ATurboSequence_Manager_Lf::Tick(float DeltaTime)
 	}
 }
 
-FTurboSequence_MinimalMeshData_Lf ATurboSequence_Manager_Lf::AddSkinnedMeshInstance_GameThread(
-	const FTurboSequence_MeshSpawnData_Lf FromSpawnData, const FTransform SpawnTransform,
-	UWorld* InWorld)
-{
-	if (!IsValid(FromSpawnData.RootMotionMesh.Mesh))
-	{
-		UE_LOG(LogTurboSequence_Lf, Warning,
-		       TEXT("Can't create Mesh Instance, the FTurboSequence_MeshSpawnData_Lf has no Mesh assigned...."));
-		return FTurboSequence_MinimalMeshData_Lf(false);
-	}
 
-	if (!IsValid(InWorld))
-	{
-		UE_LOG(LogTurboSequence_Lf, Warning, TEXT("Can't create Mesh Instance, the World is not a valid world...."));
-		return FTurboSequence_MinimalMeshData_Lf(false);
-	}
-
-	const int32 RootMotionMeshID = AddSkinnedMeshInstance_GameThread(
-		FromSpawnData.RootMotionMesh.Mesh, SpawnTransform, InWorld, FromSpawnData.RootMotionMesh.OverrideMaterials,
-		FromSpawnData.RootMotionMesh.FootprintAsset);
-
-	if (RootMotionMeshID < GET0_NUMBER)
-	{
-		return FTurboSequence_MinimalMeshData_Lf(false);
-	}
-
-
-	FTurboSequence_MinimalMeshData_Lf Data = FTurboSequence_MinimalMeshData_Lf(true);
-	Data.RootMotionMeshID = RootMotionMeshID;
-
-	for (const FTurboSequence_MeshMetaData_Lf& MeshData : FromSpawnData.CustomizableMeshes)
-	{
-		if (const int32 MeshID = AddSkinnedMeshInstance_GameThread(MeshData.Mesh, SpawnTransform, InWorld,
-		                                                           MeshData.OverrideMaterials,
-		                                                           MeshData.FootprintAsset); MeshID > INDEX_NONE)
-		{
-			Data.CustomizableMeshIDs.Add(MeshID);
-		}
-	}
-	GlobalLibrary.MeshIDToMinimalData.Add(RootMotionMeshID, Data);
-	for (int32 MeshID : Data.CustomizableMeshIDs)
-	{
-		GlobalLibrary.MeshIDToMinimalData.Add(MeshID, Data);
-	}
-
-	return Data;
-}
-
-bool ATurboSequence_Manager_Lf::RemoveSkinnedMeshInstance_GameThread(const FTurboSequence_MinimalMeshData_Lf& MeshData,
-                                                                     UWorld* InWorld)
-{
-	bool bSuccess = false;
-
-	if (RemoveSkinnedMeshInstance_GameThread(MeshData.RootMotionMeshID, InWorld))
-	{
-		bSuccess = true;
-
-		if (GlobalLibrary.MeshIDToMinimalData.Contains(MeshData.RootMotionMeshID))
-		{
-			GlobalLibrary.MeshIDToMinimalData.Remove(MeshData.RootMotionMeshID);
-		}
-	}
-
-	for (int32 MeshID : MeshData.CustomizableMeshIDs)
-	{
-		if (RemoveSkinnedMeshInstance_GameThread(MeshID, InWorld))
-		{
-			bSuccess = true;
-
-			if (GlobalLibrary.MeshIDToMinimalData.Contains(MeshID))
-			{
-				GlobalLibrary.MeshIDToMinimalData.Remove(MeshID);
-			}
-		}
-	}
-
-	return bSuccess;
-}
-
-int32 ATurboSequence_Manager_Lf::AddSkinnedMeshInstance_GameThread(
-	const TObjectPtr<UTurboSequence_MeshAsset_Lf>& FromAsset, const FTransform& SpawnTransform,
-	const TObjectPtr<UWorld>& InWorld,
-	const TArray<TObjectPtr<UMaterialInterface>>& OverrideMaterials,
-	const TObjectPtr<UTurboSequence_FootprintAsset_Lf>& FootprintAsset)
+FBaseSkeletalMeshHandle ATurboSequence_Manager_Lf::AddSkinnedMeshInstance(
+	UTurboSequence_MeshAsset_Lf* FromAsset,
+	const FTransform& SpawnTransform,
+	UObject* WorldContextObject,
+	const TArray<UMaterialInterface*>& OverrideMaterials, FLightingChannels LightingChannels, bool bNewReceivesDecals, bool bInRenderInCustomDepth, int32 InStencilValue)
 {
 	SCOPE_CYCLE_COUNTER(Add_TurboSequenceMeshInstances_Lf);
+
+	if (!IsValid(FromAsset))
 	{
+		return FBaseSkeletalMeshHandle();
+	}
+
+	if (!IsValid(FromAsset->GlobalData))
+	{
+		const FAssetRegistryModule& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(
+			"AssetRegistry");
+
+		TArray<FAssetData> GlobalAssetData;
+		AssetRegistry.Get().GetAssetsByClass(
+			FTopLevelAssetPath(UTurboSequence_GlobalData_Lf::StaticClass()->GetPathName()), GlobalAssetData);
+		if (GlobalAssetData.Num())
+		{
+			FTurboSequence_Helper_Lf::SortAssetsByPathName(GlobalAssetData);
+
+			FromAsset->GlobalData = Cast<UTurboSequence_GlobalData_Lf>(GlobalAssetData[0].GetAsset());
+		}
+
 		if (!IsValid(FromAsset->GlobalData))
 		{
-			const FAssetRegistryModule& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(
-				"AssetRegistry");
-
-			TArray<FAssetData> GlobalAssetData;
-			AssetRegistry.Get().GetAssetsByClass(
-				FTopLevelAssetPath(UTurboSequence_GlobalData_Lf::StaticClass()->GetPathName()), GlobalAssetData);
-			if (GlobalAssetData.Num())
-			{
-				FTurboSequence_Helper_Lf::SortAssetsByPathName(GlobalAssetData);
-
-				FromAsset->GlobalData = Cast<UTurboSequence_GlobalData_Lf>(GlobalAssetData[GET0_NUMBER].GetAsset());
-			}
-
-			if (!IsValid(FromAsset->GlobalData))
-			{
-				UE_LOG(LogTurboSequence_Lf, Warning,
-				       TEXT("Can't create Mesh Instance, there is no global data available...."));
-				UE_LOG(LogTurboSequence_Lf, Error,
-				       TEXT(
-					       "Can not find the Global Data asset -> This is really bad, without it Turbo Sequence does not work, you can recover it by creating an UTurboSequence_GlobalData_Lf Data Asset, Right click in the content browser anywhere in the Project, select Data Asset and choose UTurboSequence_GlobalData_Lf, save it and restart the editor"
-				       ));
-				return INDEX_NONE;
-			}
-		}
-
-		if (!IsValid(FromAsset->GlobalData->TransformTexture_CurrentFrame) || !IsValid(
-			FromAsset->GlobalData->TransformTexture_PreviousFrame))
-		{
 			UE_LOG(LogTurboSequence_Lf, Warning,
-			       TEXT(
-				       "Can't create Mesh Instance, The Transform Texture is missing in the global settings... that's pretty bad"
-			       ));
+			       TEXT("Can't create Mesh Instance, there is no global data available...."));
 			UE_LOG(LogTurboSequence_Lf, Error,
 			       TEXT(
-				       "Can not find Transform Texture ... "
+				       "Can not find the Global Data asset -> This is really bad, without it Turbo Sequence does not work, you can recover it by creating an UTurboSequence_GlobalData_Lf Data Asset, Right click in the content browser anywhere in the Project, select Data Asset and choose UTurboSequence_GlobalData_Lf, save it and restart the editor"
 			       ));
-			return INDEX_NONE;
+			return FBaseSkeletalMeshHandle();
 		}
+	}
 
-		if (!IsValid(InWorld))
-		{
-			UE_LOG(LogTurboSequence_Lf, Warning, TEXT("Can't create Mesh Instance, the World is not valid..."));
-			return INDEX_NONE;
-		}
+	if (!IsValid(FromAsset->GlobalData->TransformTexture_CurrentFrame) || !IsValid(
+		FromAsset->GlobalData->TransformTexture_PreviousFrame))
+	{
+		UE_LOG(LogTurboSequence_Lf, Warning,
+		       TEXT(
+			       "Can't create Mesh Instance, The Transform Texture is missing in the global settings... that's pretty bad"
+		       ));
+		UE_LOG(LogTurboSequence_Lf, Error,
+		       TEXT(
+			       "Can not find Transform Texture ... "
+		       ));
+		return FBaseSkeletalMeshHandle();
+	}
 
-		if (!IsValid(Instance))
+	if (!IsValid(WorldContextObject))
+	{
+		UE_LOG(LogTurboSequence_Lf, Warning, TEXT("Can't create Mesh Instance, the World is not valid..."));
+		return FBaseSkeletalMeshHandle();
+	}
+
+	if (!IsValid(Instance))
+	{
+		Instance = Cast<ATurboSequence_Manager_Lf>(
+			UGameplayStatics::GetActorOfClass(WorldContextObject, StaticClass()));
+
+		if (!IsValid(Instance)) // Is not in the map, create it
 		{
 			Instance = Cast<ATurboSequence_Manager_Lf>(
-				UGameplayStatics::GetActorOfClass(InWorld, StaticClass()));
+				WorldContextObject->GetWorld()->SpawnActor(StaticClass()));
 
-			if (!IsValid(Instance)) // Is not in the map, create it
+			if (!IsValid(Instance))
 			{
-				Instance = Cast<ATurboSequence_Manager_Lf>(
-					InWorld->SpawnActor(StaticClass()));
+				UE_LOG(LogTurboSequence_Lf, Warning,
+				       TEXT(
+					       "Can't create Mesh Instance because Instance is not valid, make sure to have a ATurboSequence_Manager_Lf in the map"
+				       ));
+				return FBaseSkeletalMeshHandle();
+			}
+		}
 
-				if (!IsValid(Instance))
+		GlobalLibrary_RenderThread.BoneTransformParams.ShaderID = GetTypeHash(Instance->GlobalData);
+	}
+
+	if (IsValid(Instance) && !IsValid(Instance->GetRootComponent()))
+	{
+		UE_LOG(LogTurboSequence_Lf, Warning,
+		       TEXT(
+			       "Can't create Mesh Instance, make sure to have ATurboSequence_Manager_Lf as a blueprint in the map"
+		       ));
+		return FBaseSkeletalMeshHandle();
+	}
+
+	Instance->GlobalData = FromAsset->GlobalData;
+
+	if (!FromAsset->IsMeshAssetValid())
+	{
+		return FBaseSkeletalMeshHandle();
+	}
+	
+	FScopeLock ScopeLock(&Instance->RenderThreadDataConsistency);
+
+	const FTurboSequenceRenderHandle RenderHandle(OverrideMaterials,FromAsset->RendererSystem, FromAsset->StaticMesh, bInRenderInCustomDepth, InStencilValue, bNewReceivesDecals, LightingChannels );
+
+	UTurboSequence_RenderData** TurboSequenceRenderDataPtr = Instance->GlobalLibrary.PerReferenceData.Find(RenderHandle);
+
+	UTurboSequence_RenderData* RenderData; 
+	
+	if(TurboSequenceRenderDataPtr)
+	{
+		RenderData = *TurboSequenceRenderDataPtr;
+	}
+	else
+	{
+		UE_LOG(LogTurboSequence_Lf, Display, TEXT("Adding Mesh Asset to Library at Path | -> %s"), *FromAsset->GetPathName());
+
+		RenderData = UTurboSequence_RenderData::CreateObject(Instance,FromAsset,FromAsset->StaticMesh );
+
+		RenderData->SpawnNiagaraComponent(OverrideMaterials.Num() > 0 ? OverrideMaterials : FromAsset->Materials,Instance->Root,FromAsset->RendererSystem,FromAsset->StaticMesh, bNewReceivesDecals, LightingChannels, bInRenderInCustomDepth, InStencilValue);
+		
+		Instance->GlobalLibrary.PerReferenceData.Add(RenderHandle, RenderData);
+	}
+	
+	if (!Instance->GlobalLibrary.PerReferenceDataKeys.Contains(FromAsset))
+	{
+		Instance->GlobalLibrary.PerReferenceDataKeys.Add(FromAsset);
+
+		FTurboSequence_Utility_Lf::UpdateMaxBones(Instance->GlobalLibrary);
+		
+		Instance->GlobalLibrary.bRefreshAsyncChunkedMeshData = true;
+	}
+	
+	// Now it's time to add the actual instance
+	const FBaseSkeletalMeshHandle MeshID(Instance->GlobalLibrary.GlobalMeshCounter++);
+	const int32 SizeInBoneTexture = FromAsset->GetNumGPUBones() * 3; //Translation + Rotation + Scale
+	const int32 BoneTextureSkeletonIndex = Instance->GlobalLibrary.BoneTextureAllocator.Allocate(SizeInBoneTexture); 
+
+	//UE_LOG(LogTurboSequence_Lf, Display, TEXT("Allocation %d in the bone texture at %d"), SizeInBoneTexture, BoneTextureSkeletonIndex);
+
+	FSkinnedMeshRuntime_Lf Runtime = FSkinnedMeshRuntime_Lf(MeshID, FromAsset, RenderHandle, BoneTextureSkeletonIndex);
+	Runtime.WorldSpaceTransform = SpawnTransform;
+
+	RenderData->AddRenderInstance(MeshID, SpawnTransform, BoneTextureSkeletonIndex);
+	
+	Instance->GlobalLibrary.RuntimeSkinnedMeshes.Add(MeshID, Runtime);
+	
+	FTurboSequence_AnimPlaySettings_Lf PlaySetting = FTurboSequence_AnimPlaySettings_Lf();
+	PlaySetting.ForceMode = ETurboSequence_AnimationForceMode_Lf::AllLayers;
+	PlaySetting.RootMotionMode = ETurboSequence_RootMotionMode_Lf::None;
+
+	PlayAnimation(MeshID, FromAsset->OverrideDefaultAnimation, PlaySetting);
+	
+	return MeshID;
+}
+
+void ATurboSequence_Manager_Lf::RemoveRenderHandle(const FTurboSequenceRenderHandle RenderHandle, const FAttachmentMeshHandle MeshHandle, const TObjectPtr<
+                                                   UTurboSequence_MeshAsset_Lf> DataAsset, bool
+                                                   & bRemovedASkeleton)
+{
+
+	bRemovedASkeleton = false;
+
+	UTurboSequence_RenderData** TurboSequenceRenderDataPtr = Instance->GlobalLibrary.PerReferenceData.Find(RenderHandle);
+
+	ensure(TurboSequenceRenderDataPtr);
+	
+	if(TurboSequenceRenderDataPtr)
+	{
+		UTurboSequence_RenderData* RenderData = *TurboSequenceRenderDataPtr;
+	
+		RenderData->RemoveRenderInstance(MeshHandle);
+		// Time to remove the reference, we assume here the instance has a mesh,
+		// If no renderers using the component anymore, remove it
+
+		if (RenderData->GetActiveNum() == 0)
+		{
+			RenderData->DestroyNiagaraComponent();
+			
+			Instance->GlobalLibrary.PerReferenceData.Remove(RenderHandle);
+
+			bool bStillUsingDataAsset = false;
+			
+			for (const auto &PerReferenceData : Instance->GlobalLibrary.PerReferenceData)
+			{
+				if(PerReferenceData.Value->DataAsset == DataAsset)
 				{
-					UE_LOG(LogTurboSequence_Lf, Warning,
-					       TEXT(
-						       "Can't create Mesh Instance because Instance is not valid, make sure to have a ATurboSequence_Manager_Lf in the map"
-					       ));
-					return INDEX_NONE;
+					bStillUsingDataAsset = true;
+					break;
 				}
 			}
-		}
 
-		if (IsValid(Instance) && !IsValid(Instance->GetRootComponent()))
-		{
-			UE_LOG(LogTurboSequence_Lf, Warning,
-			       TEXT(
-				       "Can't create Mesh Instance, make sure to have ATurboSequence_Manager_Lf as a blueprint in the map"
-			       ));
-			return INDEX_NONE;
-		}
-
-		Instance->GlobalData = FromAsset->GlobalData;
-
-		if (!FromAsset->IsMeshAssetValid())
-		{
-			return INDEX_NONE;
-		}
-
-		const TObjectPtr<UTurboSequence_ThreadContext_Lf> ThreadContext = Instance->GetThreadContext();
-		if (!GlobalLibrary.PerReferenceData.Contains(FromAsset))
-		{
-			GlobalLibrary_RenderThread.SkinWeightParams.ShaderID = GetTypeHash(Instance);
-			GlobalLibrary_RenderThread.BoneTransformParams.ShaderID = GetTypeHash(Instance->GlobalData);
-
-			FTurboSequence_Utility_Lf::CreateAsyncChunkedMeshData(FromAsset, Instance->GlobalData, GlobalLibrary,
-			                                                      GlobalLibrary_RenderThread,
-			                                                      ThreadContext->CriticalSection);
-		}
-
-		FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[FromAsset];
-
-		TArray<TObjectPtr<UMaterialInterface>> Materials;
-		Materials.SetNum(OverrideMaterials.Num());
-		uint8 NumOverrideMaterials = OverrideMaterials.Num();
-		for (uint8 MaterialIdx = GET0_NUMBER; MaterialIdx < NumOverrideMaterials; ++MaterialIdx)
-		{
-			Materials[MaterialIdx] = OverrideMaterials[MaterialIdx];
-		}
-		if (!Materials.Num() && IsValid(Reference.FirstValidMeshLevelOfDetail))
-		{
-			const TArray<FStaticMaterial>& MeshMaterials = Reference.FirstValidMeshLevelOfDetail->GetStaticMaterials();
-			uint8 NumMeshMaterialsMaterials = MeshMaterials.Num();
-			Materials.SetNum(NumMeshMaterialsMaterials);
-			for (uint8 MaterialIdx = GET0_NUMBER; MaterialIdx < NumMeshMaterialsMaterials; ++MaterialIdx)
+			if(!bStillUsingDataAsset)
 			{
-				Materials[MaterialIdx] = MeshMaterials[MaterialIdx].MaterialInterface;
+				Instance->GlobalLibrary.PerReferenceDataKeys.Remove(DataAsset);
+				bRemovedASkeleton = true;
 			}
 		}
-
-		uint32 MaterialsHash = FTurboSequence_Helper_Lf::GetArrayHash(Materials);
-		if (!Instance->NiagaraComponents.Contains(FromAsset) || (Instance->NiagaraComponents.Contains(FromAsset) && !
-			Instance->NiagaraComponents[FromAsset].NiagaraRenderer.Contains(MaterialsHash)))
-		{
-			FTurboSequence_Utility_Lf::CreateRenderer(Reference, FromAsset->GlobalData, FromAsset->RendererSystem,
-			                                          Reference.LevelOfDetails, Instance->GetRootComponent(),
-			                                          Instance->NiagaraComponents, FromAsset, Materials, MaterialsHash);
-		}
-
-		// Now it's time to add the actual instance
-		FSkinnedMeshRuntime_Lf Runtime = FSkinnedMeshRuntime_Lf(GlobalLibrary.RuntimeSkinnedMeshes, FromAsset);
-		FSkinnedMeshRuntime_RenderThread_Lf Runtime_RenderThread = FSkinnedMeshRuntime_RenderThread_Lf(
-			Runtime.GetMeshID(), FromAsset);
-		Runtime_RenderThread.bIsVisible = true;
-		Runtime.WorldSpaceTransform = SpawnTransform;
-		Runtime.MaterialsHash = MaterialsHash;
-		Runtime.bForceVisibilityUpdatingThisFrame = true;
-		bool bIsFirstFootprintCall = false;
-		if (IsValid(FootprintAsset))
-		{
-			Runtime.FootprintAsset = FootprintAsset;
-			if (!FootprintAssetsInUse.Contains(FootprintAsset))
-			{
-				FootprintAssetsInUse.Add(FootprintAsset, GET1_NUMBER);
-				bIsFirstFootprintCall = true;
-			}
-			else
-			{
-				FootprintAssetsInUse[FootprintAsset]++;
-			}
-		}
-
-		// We need to define the start LOD so in this case we make a basic LOD calculation which requires
-		// the Camera transforms to be Updated, when the simulation is running the SolveMeshes_GameThread
-		// function is handling the CameraViews
-		if (!GlobalLibrary.CameraViews.Num() || (GlobalLibrary.CameraViews.Num() && GlobalLibrary.CameraViews[
-			GET0_NUMBER].CameraTransform.Equals(
-			FTransform::Identity)))
-		{
-			FTurboSequence_Utility_Lf::UpdateCameras(GlobalLibrary.CameraViews, InWorld);
-			uint8 CameraIndex = GET0_NUMBER;
-			for (FCameraView_Lf& View : GlobalLibrary.CameraViews)
-			{
-				FTurboSequence_Helper_Lf::GetCameraFrustumPlanes_ObjectSpace(
-					View.Planes_Internal, View.Fov, View.ViewportSize, View.AspectRatioAxisConstraint,
-					View.NearClipPlane, View.FarClipPlane,
-					!View.bIsPerspective, View.OrthoWidth);
-
-				View.InterpolatedCameraTransform_Internal = View.CameraTransform;
-
-				FTransform& LastTransform = LastFrameCameraTransforms.FindOrAdd(CameraIndex);
-				LastTransform = View.CameraTransform;
-				CameraIndex++;
-			}
-		}
-		const FTransform& InstanceTransform = Runtime.WorldSpaceTransform;
-
-		FTurboSequence_Utility_Lf::AddRenderInstance(Reference, Runtime, ThreadContext->CriticalSection,
-		                                             InstanceTransform);
-
-
-		Runtime.LodIndex = INDEX_NONE;
-		Runtime.bIsVisible = true;
-
-
-		FTurboSequence_Utility_Lf::UpdateCullingAndLevelOfDetail(Runtime, Reference,
-		                                                         GlobalLibrary.CameraViews,
-		                                                         Instance->GetThreadContext(), GlobalLibrary);
-
-		ThreadContext->CriticalSection.Lock();
-		GlobalLibrary.MeshIDToGlobalIndex.Add(Runtime.GetMeshID(), GlobalLibrary.RuntimeSkinnedMeshes.Num());
-		GlobalLibrary.RuntimeSkinnedMeshesHashMap.Add(Runtime.GetMeshID());
-		GlobalLibrary.RuntimeSkinnedMeshes.Add(Runtime.GetMeshID(), Runtime);
-		ThreadContext->CriticalSection.Unlock();
-
-		FTurboSequence_AnimPlaySettings_Lf PlaySetting = FTurboSequence_AnimPlaySettings_Lf();
-		PlaySetting.ForceMode = ETurboSequence_AnimationForceMode_Lf::AllLayers;
-		PlaySetting.RootMotionMode = ETurboSequence_RootMotionMode_Lf::None;
-
-		PlayAnimation_RawID_Concurrent(Runtime.GetMeshID(), FromAsset->OverrideDefaultAnimation, PlaySetting);
-
-		FSkinnedMeshGlobalLibrary_RenderThread_Lf& Library_RenderThread = GlobalLibrary_RenderThread;
-		ENQUEUE_RENDER_COMMAND(TurboSequence_AddRenderInstance_Lf)(
-			[&Library_RenderThread, Runtime_RenderThread](FRHICommandListImmediate& RHICmdList)
-			{
-				Library_RenderThread.MeshIDToGlobalIndex.Add(Runtime_RenderThread.GetMeshID(),
-				                                             Library_RenderThread.RuntimeSkinnedMeshes.Num());
-
-				Library_RenderThread.RuntimeSkinnedMeshes.Add(Runtime_RenderThread.GetMeshID(), Runtime_RenderThread);
-				Library_RenderThread.RuntimeSkinnedMeshesHashMap.Add(Runtime_RenderThread.GetMeshID());
-			});
-
-		if (IsValid(Runtime.FootprintAsset))
-		{
-			Runtime.FootprintAsset->OnAddedMeshInstance_GameThread(Runtime.GetMeshID(), FromAsset);
-			if (bIsFirstFootprintCall)
-			{
-				Runtime.FootprintAsset->OnFirstMeshAdded_GameThread();
-			}
-		}
-		return Runtime.GetMeshID();
 	}
 }
 
-bool ATurboSequence_Manager_Lf::RemoveSkinnedMeshInstance_GameThread(int32 MeshID,
-                                                                     const TObjectPtr<UWorld> InWorld)
+bool ATurboSequence_Manager_Lf::RemoveSkinnedMeshInstance(FBaseSkeletalMeshHandle MeshID)
 {
-	if (!IsValid(InWorld))
-	{
-		return false;
-	}
+	FScopeLock ScopeLock(&Instance->RenderThreadDataConsistency);
 
+	SCOPE_CYCLE_COUNTER(Remove_TurboSequenceMeshInstances_Lf);
+	
 	if (!IsValid(Instance))
 	{
 		return false;
 	}
 
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
+	FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID);
+
+	ensure(Runtime);
+	
+	if (!Runtime)
 	{
 		return false;
 	}
-
-	const TObjectPtr<UTurboSequence_ThreadContext_Lf> ThreadContext = Instance->GetThreadContext();
-	FSkinnedMeshGlobalLibrary_RenderThread_Lf& Library_RenderThread = GlobalLibrary_RenderThread;
-
-	FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-	if (IsValid(Runtime.FootprintAsset))
-	{
-		Runtime.FootprintAsset->OnRemovedMeshInstance_GameThread(Runtime.GetMeshID(), Runtime.DataAsset);
-
-		FootprintAssetsInUse[Runtime.FootprintAsset]--;
-		if (FootprintAssetsInUse[Runtime.FootprintAsset] <= GET0_NUMBER)
-		{
-			FootprintAssetsInUse.Remove(Runtime.FootprintAsset);
-			Runtime.FootprintAsset->OnLastMeshRemoved_GameThread();
-		}
-	}
-	FTurboSequence_Utility_Lf::ClearAnimations(ThreadContext, Runtime, GlobalLibrary, Library_RenderThread,
-	                                           ETurboSequence_AnimationForceMode_Lf::AllLayers,
-	                                           TArray<FTurboSequence_BoneLayer_Lf>(),
+	
+	FTurboSequence_Utility_Lf::ClearAnimations(*Runtime, Instance->GlobalLibrary, ETurboSequence_AnimationForceMode_Lf::AllLayers, TArray<FTurboSequence_BoneLayer_Lf>(),
 	                                           [](const FAnimationMetaData_Lf& Animation)
 	                                           {
 		                                           return true;
 	                                           });
 	// Since we have the first animation as rest pose
-	FTurboSequence_Utility_Lf::RemoveAnimation(Runtime, ThreadContext, GlobalLibrary, Library_RenderThread,
-	                                           GET0_NUMBER);
-	FTurboSequence_Utility_Lf::UpdateAnimationLayerMasks(ThreadContext->CriticalSection, GlobalLibrary,
-	                                                     Library_RenderThread);
+	FTurboSequence_Utility_Lf::RemoveAnimation(*Runtime, Instance->GlobalLibrary, 0);
+	
+	bool bRemovedASkeleton;
+	bool bRemovedAnySkeleton = false;
 
-	FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
-	FTurboSequence_Utility_Lf::RemoveRenderInstance(Reference, Runtime, ThreadContext->CriticalSection);
-
-	if (const FRenderData_Lf& RenderData = Reference.RenderData[Runtime.MaterialsHash]; !RenderData.InstanceMap.Num())
+	//Remove Attachments
+	for (const FSkinnedMeshAttachmentRuntime &Attachment : Runtime->Attachments)
 	{
-		FTurboSequence_Utility_Lf::CleanNiagaraRenderer(Instance->NiagaraComponents, Reference, Runtime);
-	}
-	GlobalLibrary.RuntimeSkinnedMeshes.Remove(Runtime.GetMeshID());
-	GlobalLibrary.RuntimeSkinnedMeshesHashMap.Remove(Runtime.GetMeshID());
-	GlobalLibrary.MeshIDToMinimalData.Remove(Runtime.GetMeshID());
+		RemoveRenderHandle(Attachment.RenderHandle, Attachment.AttachmentHandle,nullptr, bRemovedASkeleton);
 
-	const int32 GlobalIndex = GlobalLibrary.MeshIDToGlobalIndex[Runtime.GetMeshID()];
-	GlobalLibrary.MeshIDToGlobalIndex.Remove(Runtime.GetMeshID());
-	for (TTuple<int32, int32>& Index : GlobalLibrary.MeshIDToGlobalIndex)
-	{
-		if (Index.Value > GlobalIndex)
-		{
-			Index.Value--;
-		}
+		bRemovedAnySkeleton |= bRemovedASkeleton;
 	}
 
-	const int32 MeshID_RenderThread = Runtime.GetMeshID();
-	ENQUEUE_RENDER_COMMAND(TurboSequence_RemoveRenderInstance_Lf)(
-		[&Library_RenderThread, MeshID_RenderThread](FRHICommandListImmediate& RHICmdList)
-		{
-			const int32 GlobalIndex = Library_RenderThread.MeshIDToGlobalIndex[MeshID_RenderThread];
-			Library_RenderThread.MeshIDToGlobalIndex.Remove(MeshID_RenderThread);
-			for (TTuple<int32, int32>& Index : Library_RenderThread.MeshIDToGlobalIndex)
-			{
-				if (Index.Value > GlobalIndex)
-				{
-					Index.Value--;
-				}
-			}
+	Runtime->Attachments.Empty();
+	
+	Runtime->RemoveAllAttachedParticles();
+	
+	RemoveRenderHandle(Runtime->RenderHandle, MeshID, Runtime->DataAsset, bRemovedASkeleton);
 
-			Library_RenderThread.RuntimeSkinnedMeshes.Remove(MeshID_RenderThread);
-			Library_RenderThread.RuntimeSkinnedMeshesHashMap.Remove(MeshID_RenderThread);
-		});
+	bRemovedAnySkeleton |= bRemovedASkeleton;
 
+	const int32 SizeInBoneTexture = Runtime->DataAsset->GetNumGPUBones() * 3;
 
-	// Time to remove the reference, we assume here the instance has a mesh,
-	if (!Reference.RenderData.Num())
+	//UE_LOG(LogTurboSequence_Lf, Display, TEXT("Freeing %d in the bone texture at %d"), SizeInBoneTexture, Runtime->BoneTextureSkeletonIndex);
+	Instance->GlobalLibrary.BoneTextureAllocator.Free(Runtime->BoneTextureSkeletonIndex, SizeInBoneTexture);
+	
+	Instance->GlobalLibrary.RuntimeSkinnedMeshes.Remove(MeshID); Runtime = nullptr;
+	
+	if(bRemovedAnySkeleton)
 	{
-		GlobalLibrary.PerReferenceData.Remove(Runtime.DataAsset);
-		GlobalLibrary.PerReferenceDataKeys.Remove(Runtime.DataAsset);
-
-		const TObjectPtr<UTurboSequence_MeshAsset_Lf> DataAsset_RenderThread = Runtime.DataAsset;
-		ENQUEUE_RENDER_COMMAND(TurboSequence_RemoveRenderThreadReference_Lf)(
-			[&Library_RenderThread, DataAsset_RenderThread](FRHICommandListImmediate& RHICmdList)
-			{
-				Library_RenderThread.PerReferenceDataKeys.Remove(DataAsset_RenderThread);
-				Library_RenderThread.PerReferenceData.Remove(DataAsset_RenderThread);
-
-				const int16 NumReferences = Library_RenderThread.PerReferenceData.Num();
-				for (int16 i = GET0_NUMBER; i < NumReferences; ++i)
-				{
-					FSkinnedMeshReference_RenderThread_Lf& ReferenceOther = Library_RenderThread.PerReferenceData[
-						Library_RenderThread.PerReferenceDataKeys[i]];
-
-					ReferenceOther.ReferenceCollectionIndex = i;
-				}
-			});
-
-		const int16 NumReferences = GlobalLibrary.PerReferenceData.Num();
-		for (int16 i = GET0_NUMBER; i < NumReferences; ++i)
-		{
-			FSkinnedMeshReference_Lf& ReferenceOther = GlobalLibrary.PerReferenceData[GlobalLibrary.PerReferenceDataKeys
-				[i]];
-
-			ReferenceOther.ReferenceCollectionIndex = i;
-		}
-
-		FTurboSequence_Utility_Lf::RefreshAsyncChunkedMeshData(Instance->GlobalData, GlobalLibrary,
-		                                                       GlobalLibrary_RenderThread,
-		                                                       ThreadContext->CriticalSection);
+		FTurboSequence_Utility_Lf::UpdateMaxBones(Instance->GlobalLibrary);
+		
+		Instance->GlobalLibrary.bRefreshAsyncChunkedMeshData = true;
 	}
 
 	return true;
 }
+
+// Function to get the component space reference pose of a bone
+FTransform GetComponentSpaceRefPose(const FReferenceSkeleton& RefSkeleton, const int32 BoneIndex)
+{
+	if (BoneIndex < 0 || BoneIndex >= RefSkeleton.GetNum())
+	{
+		return FTransform::Identity;
+	}
+
+	// Start with the bone's transform in local space
+	FTransform BoneTransform = RefSkeleton.GetRefBonePose()[BoneIndex];
+
+	// Traverse up the hierarchy to convert to component space
+	int32 ParentIndex = RefSkeleton.GetParentIndex(BoneIndex);
+	while (ParentIndex != INDEX_NONE)
+	{
+		BoneTransform *= RefSkeleton.GetRefBonePose()[ParentIndex];
+		ParentIndex = RefSkeleton.GetParentIndex(ParentIndex);
+	}
+
+	return BoneTransform;
+}
+
+bool ATurboSequence_Manager_Lf::GetAttachmentComponentSpaceTransform(FTransform& AttachmentComponentSpaceTransform,
+                                                                     int32& BoneIndexGPU, const FName
+                                                                     BoneOrSocketName,
+                                                                     const TObjectPtr<UTurboSequence_MeshAsset_Lf>& MeshAsset, const FTransform& Transform, const EBoneControlSpace AttachSpace, const FTransform& WorldSpaceTransform)
+{
+	FName AttachBoneName;
+	FTransform AttachTransform;
+	
+	if(const USkeletalMeshSocket* Socket = MeshAsset->GetSkeleton()->FindSocket(BoneOrSocketName))
+	{
+		AttachBoneName = Socket->BoneName;
+		AttachTransform = Socket->GetSocketLocalTransform() * Transform;
+	}
+	else
+	{
+		AttachBoneName = BoneOrSocketName;
+		AttachTransform = Transform;
+	}
+	
+	const int32 BoneIndexCPU = MeshAsset->GetBoneCPUIndex(AttachBoneName);
+	
+	if(BoneIndexCPU == INDEX_NONE)
+	{
+		BoneIndexGPU = INDEX_NONE;
+		return false; //Can't find the bone
+	}
+	
+	BoneIndexGPU = MeshAsset->GetBoneGPUIndex(BoneIndexCPU);
+
+	if (BoneIndexGPU == INDEX_NONE )
+	{
+		return false; //Bone is not available in the skinned subset of bones (and parents)
+	}
+
+	const FReferenceSkeleton& ReferenceSkeleton = MeshAsset->GetReferenceSkeleton();
+	
+	switch (AttachSpace)
+	{
+	case BCS_WorldSpace:
+		AttachmentComponentSpaceTransform = WorldSpaceTransform.Inverse() * AttachTransform;
+		break;
+	default:
+	case BCS_ComponentSpace:
+		AttachmentComponentSpaceTransform = AttachTransform;
+		break;
+	case BCS_ParentBoneSpace:
+		{
+			const int32 ParentIndex = ReferenceSkeleton.GetParentIndex(BoneIndexCPU);
+
+			ensure(ParentIndex != INDEX_NONE);
+
+			if(ParentIndex != INDEX_NONE)
+			{
+				AttachmentComponentSpaceTransform = AttachTransform * GetComponentSpaceRefPose( ReferenceSkeleton,ParentIndex) ;
+			}
+		}
+		break;
+	case BCS_BoneSpace:
+		AttachmentComponentSpaceTransform = AttachTransform * GetComponentSpaceRefPose( ReferenceSkeleton,BoneIndexCPU) ;
+		break;
+	}
+
+	return true;
+}
+
+FAttachmentMeshHandle ATurboSequence_Manager_Lf::AddInstanceAttachment(const FBaseSkeletalMeshHandle MeshID,
+                                                                       UStaticMesh* StaticMesh, const FName SocketOrBoneName, const FTransform& Transform,
+                                                                       const TArray<UMaterialInterface*>& OverrideMaterials, FLightingChannels LightingChannels, bool bNewReceivesDecals, const bool bInRenderInCustomDepth, const int32 InStencilValue, const EBoneControlSpace AttachSpace)
+{
+	if(FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
+	{
+		FTransform AttachmentComponentSpaceTransform;
+		int32 BoneIndexGPU;
+		
+		if(!GetAttachmentComponentSpaceTransform(AttachmentComponentSpaceTransform, BoneIndexGPU, SocketOrBoneName, Runtime->DataAsset, Transform,AttachSpace, Runtime->WorldSpaceTransform))
+		{
+			UE_LOG(LogTurboSequence_Lf, Warning, TEXT("Unable to find attachment: %s"), *SocketOrBoneName.ToString());
+			return FAttachmentMeshHandle(); //Can't find the bone or is not available in the skinned subset of bones (and parents)
+		}
+		
+		const FTurboSequenceRenderHandle AttachmentRenderHandle(OverrideMaterials,AttachmentAsset->RendererSystem, StaticMesh, bInRenderInCustomDepth, InStencilValue, bNewReceivesDecals, LightingChannels );
+		UTurboSequence_RenderData** TurboSequenceRenderDataPtr = Instance->GlobalLibrary.PerReferenceData.Find(AttachmentRenderHandle);
+
+		UTurboSequenceRenderAttachmentData* RenderData;
+		if(TurboSequenceRenderDataPtr)
+		{
+			RenderData = Cast<UTurboSequenceRenderAttachmentData>(*TurboSequenceRenderDataPtr);
+		}
+		else
+		{
+			//Add on the bounds of the mesh we attach to
+			//We don't know what orientation the mesh will be attached, so we should take the maximum absolute extrema, or maybe the radius
+			//FVector MeshMaxBounds = StaticMesh->GetBounds().GetBoxExtrema(true);
+			//FVector MeshMinBounds = StaticMesh->GetBounds().GetBoxExtrema(false);
+
+			FVector MeshMaxBounds = FVector(StaticMesh->GetBounds().SphereRadius);
+			FVector MeshMinBounds = FVector(-StaticMesh->GetBounds().SphereRadius);
+		
+			if(const UTurboSequence_RenderData* BaseRenderData = Instance->GlobalLibrary.PerReferenceData[Runtime->RenderHandle])
+			{
+				MeshMaxBounds += BaseRenderData->GetMeshMaxBounds();
+				MeshMinBounds += BaseRenderData->GetMeshMinBounds();
+			}
+		
+			RenderData = UTurboSequenceRenderAttachmentData::CreateObject(Instance,Runtime->DataAsset, MeshMinBounds,MeshMaxBounds);
+
+			RenderData->SpawnNiagaraComponent(OverrideMaterials,Instance->GetRootComponent(), AttachmentAsset->RendererSystem, StaticMesh, bNewReceivesDecals, LightingChannels, bInRenderInCustomDepth, InStencilValue);
+
+			Instance->GlobalLibrary.PerReferenceData.Add(AttachmentRenderHandle, RenderData);
+		}
+		
+		// Now it's time to add the actual instance
+		const FAttachmentMeshHandle AttachmentMeshHandle = Runtime->AddAttachment(AttachmentRenderHandle);
+		RenderData->AddAttachmentRenderInstance(AttachmentMeshHandle, Runtime->WorldSpaceTransform,FTransform3f(AttachmentComponentSpaceTransform), BoneIndexGPU, Runtime->BoneTextureSkeletonIndex);
+		return AttachmentMeshHandle;
+	}
+
+	return FAttachmentMeshHandle();
+}
+
+void ATurboSequence_Manager_Lf::RemoveInstanceAttachment(const FAttachmentMeshHandle AttachmentHandle)
+{
+	if(FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(AttachmentHandle.GetBaseHandle()))
+	{
+		for(int32 AttachmentIndex = Runtime->Attachments.Num() - 1; AttachmentIndex >= 0; --AttachmentIndex)
+		{
+			FSkinnedMeshAttachmentRuntime& Attachment = Runtime->Attachments[AttachmentIndex];
+			if(Attachment.AttachmentHandle == AttachmentHandle)
+			{
+				bool bRemovedASkeleton;
+
+				RemoveRenderHandle(Attachment.RenderHandle, Attachment.AttachmentHandle,nullptr, bRemovedASkeleton);
+				Runtime->Attachments.RemoveAtSwap(AttachmentIndex);
+				break;
+			}
+		}
+	}
+}
+
+UNiagaraComponent* ATurboSequence_Manager_Lf::SpawnParticleAttachedSingle(const FBaseSkeletalMeshHandle MeshID, UNiagaraSystem* RendererSystem, const FName SocketOrBoneName, const FTransform& Transform, const EBoneControlSpace
+                                                                          AttachSpace)
+{
+	if(FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
+	{
+		FTransform AttachmentComponentSpaceTransform;
+		int32 BoneIndexGPU;
+		
+		if(!GetAttachmentComponentSpaceTransform(AttachmentComponentSpaceTransform, BoneIndexGPU, SocketOrBoneName, Runtime->DataAsset, Transform, AttachSpace, Runtime->WorldSpaceTransform))
+		{
+			UE_LOG(LogTurboSequence_Lf, Warning, TEXT("Unable to find attachment: %s"), *SocketOrBoneName.ToString());
+			return nullptr; //Can't find the bone or is not available in the skinned subset of bones (and parents)
+		}
+		
+		if(UNiagaraComponent* NiagaraComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(Instance->GetWorld(), RendererSystem, static_cast<const FTransform&>(Runtime->WorldSpaceTransform).GetLocation(),static_cast<const FTransform&>(Runtime->WorldSpaceTransform).Rotator(),static_cast<const FTransform&>(Runtime->WorldSpaceTransform).GetScale3D() ))
+		{
+			NiagaraComponent->SetIntParameter("User.SkeletonIndex", Runtime->BoneTextureSkeletonIndex);
+			NiagaraComponent->SetIntParameter("User.BoneIndex", BoneIndexGPU);
+			NiagaraComponent->SetVectorParameter("User.ParticleAttachment_Position", AttachmentComponentSpaceTransform.GetTranslation());
+			NiagaraComponent->SetVariableVec4("User.ParticleAttachment_Rotation", FTurboSequence_Helper_Lf::ConvertQuaternionToVector4(AttachmentComponentSpaceTransform.GetRotation()));
+			NiagaraComponent->SetVectorParameter("User.ParticleAttachment_Scale", AttachmentComponentSpaceTransform.GetScale3D());
+
+			Runtime->AddAttachedParticle(NiagaraComponent);
+
+			return NiagaraComponent;
+		}
+	}
+	
+	return nullptr;
+}
+
+UNiagaraComponent* ATurboSequence_Manager_Lf::SpawnParticleAttachedMulti(const FBaseSkeletalMeshHandle MeshID,
+	UNiagaraSystem* RendererSystem, const TArray<FTurboSequence_AttachInfo>& Attachments, const EBoneControlSpace AttachSpace)
+{
+	if(FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
+	{
+		TArray<int32> BoneIndexes;
+		TArray<FVector3f> ComponentTranslations;
+		TArray<FVector4f> ComponentRotations;
+		TArray<FVector3f> ComponentScales;
+
+		const FTransform& WorldSpaceTransform = Runtime->WorldSpaceTransform;
+		
+		for (const FTurboSequence_AttachInfo& Attachment : Attachments)
+		{
+			FTransform AttachmentComponentSpaceTransform;
+			int32 BoneIndexGPU;
+			
+			if(GetAttachmentComponentSpaceTransform(AttachmentComponentSpaceTransform, BoneIndexGPU, Attachment.Name, Runtime->DataAsset, Attachment.Transform, AttachSpace, WorldSpaceTransform))
+			{
+				BoneIndexes.Add(BoneIndexGPU);
+				ComponentTranslations.Add(FTurboSequence_Helper_Lf::ConvertVectorToVector3F(AttachmentComponentSpaceTransform.GetTranslation()));
+				ComponentRotations.Add(FTurboSequence_Helper_Lf::ConvertQuaternionToVector4F(AttachmentComponentSpaceTransform.GetRotation()));
+				ComponentScales.Add( FTurboSequence_Helper_Lf::ConvertVectorToVector3F(AttachmentComponentSpaceTransform.GetScale3D()));
+			}
+			else
+			{
+				UE_LOG(LogTurboSequence_Lf, Warning, TEXT("Unable to find attachment: %s"), *Attachment.Name.ToString());
+			}
+		}
+
+		if(ComponentTranslations.Num() > 0)
+		{
+			if(UNiagaraComponent* NiagaraComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(Instance->GetWorld(), RendererSystem, WorldSpaceTransform.GetLocation(),WorldSpaceTransform.Rotator(),WorldSpaceTransform.GetScale3D() ))
+			{
+				NiagaraComponent->SetIntParameter("User.SkeletonIndex", Runtime->BoneTextureSkeletonIndex);
+
+				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayInt32( NiagaraComponent, "User.BoneIndexes", BoneIndexes);
+				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector( NiagaraComponent, "User.ParticleAttachment_Positions", ComponentTranslations);
+				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector4( NiagaraComponent, "User.ParticleAttachment_Rotations", ComponentRotations);
+				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector( NiagaraComponent, "User.ParticleAttachment_Scales", ComponentScales);
+			
+				Runtime->AddAttachedParticle(NiagaraComponent);
+
+				return NiagaraComponent;
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+UNiagaraComponent* ATurboSequence_Manager_Lf::SpawnParticle(FBaseSkeletalMeshHandle MeshID,
+	UNiagaraSystem* NiagaraSystem)
+{
+	if(FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
+	{
+		const FTransform& WorldSpaceTransform = Runtime->WorldSpaceTransform;
+		
+		if(UNiagaraComponent* NiagaraComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(Instance->GetWorld(), NiagaraSystem, WorldSpaceTransform.GetLocation(),WorldSpaceTransform.Rotator(),WorldSpaceTransform.GetScale3D() ))
+		{
+			UNiagaraFunctionLibrary::OverrideSystemUserVariableStaticMesh(NiagaraComponent,"User.StaticMesh",Runtime->DataAsset->StaticMesh  );
+			NiagaraComponent->SetIntParameter("User.SkeletonIndex", Runtime->BoneTextureSkeletonIndex);
+			
+			Runtime->AddAttachedParticle(NiagaraComponent);
+
+			return NiagaraComponent;
+		}
+	}
+
+	return nullptr;
+}
+
+bool ATurboSequence_Manager_Lf::RemoveParticle(const FBaseSkeletalMeshHandle MeshID, UNiagaraComponent* NiagaraComponent,const bool bDestroy)
+{
+	if(FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
+	{
+		return Runtime->RemoveAttachedParticle(NiagaraComponent, bDestroy);
+	}
+
+	return false;
+}
+
+
 
 
 /**
  * @brief Solves all meshes at once, call it only in the game thread
  * @param DeltaTime The DeltaTime in seconds
  * @param InWorld The world, we need it for the cameras and culling
- * @param UpdateContext The Update Context for useful stuff like the Group Index
  */
-void ATurboSequence_Manager_Lf::SolveMeshes_GameThread(float DeltaTime, UWorld* InWorld,
-                                                       FTurboSequence_UpdateContext_Lf UpdateContext)
+void ATurboSequence_Manager_Lf::SolveMeshes_GameThread(float DeltaTime, UWorld* InWorld)
 {
+	FScopeLock ScopeLock(&Instance->RenderThreadDataConsistency);
+	
 	SCOPE_CYCLE_COUNTER(STAT_Solve_TurboSequenceMeshes_Lf);
+	const int32 SkinnedMeshCount = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Num();
+	
+	// When we are actually have any data, otherwise there is nothing to compute and we can return
+	if (SkinnedMeshCount == 0)
 	{
-		// When we are actually have any data, otherwise there is nothing to compute and we can return
-		if (!GlobalLibrary.RuntimeSkinnedMeshes.Num())
-		{
-			bMeshesSolvingAtTheMoment = false;
-			return;
-		}
-
-		bMeshesSolvingAtTheMoment = true;
-
-		if (!IsValid(Instance))
-		{
-			return;
-		}
-
-		FTurboSequence_Utility_Lf::UpdateCameras_1(GlobalLibrary.CameraViews, LastFrameCameraTransforms, InWorld,
-		                                           DeltaTime);
-
-		if (!GlobalLibrary.CameraViews.Num())
-		{
-			return;
-		}
-
-		if (!GlobalLibrary.UpdateGroups.IsValidIndex(UpdateContext.GroupIndex))
-		{
-			return;
-		}
-
-		for (const TTuple<TObjectPtr<UTurboSequence_FootprintAsset_Lf>, int32>& Footprint : FootprintAssetsInUse)
-		{
-			if (IsValid(Footprint.Key))
-			{
-				Footprint.Key->OnPreUpdateGroupSolved_GameThread(DeltaTime, InWorld, UpdateContext);
-			}
-		}
-
-		int64 CurrentFrameCount = UKismetSystemLibrary::GetFrameCount();
-
-		const TObjectPtr<UTurboSequence_ThreadContext_Lf> ThreadContext = Instance->GetThreadContext();
-
-		FSkinnedMeshGlobalLibrary_RenderThread_Lf& Library_RenderThread = GlobalLibrary_RenderThread;
-
-		bool bMeshIsVisible = false;
-		//TArray<FInstanceQueue_Lf> QueuedMeshes;
-		const int32 NumMeshes = GlobalLibrary.UpdateGroups[UpdateContext.GroupIndex].RawIDs.Num();
-		int16 NumThreads = FTurboSequence_Helper_Lf::NumCPUThreads() - GET1_NUMBER;
-		int32 NumMeshesPerThread = FMath::CeilToInt(
-			static_cast<float>(NumMeshes) / static_cast<float>(NumThreads));
-		ParallelFor(NumThreads, [&](int32 ThreadsIndex)
-		{
-			const int32 MeshBaseIndex = ThreadsIndex * NumMeshesPerThread;
-			const int32 MeshBaseNum = MeshBaseIndex + NumMeshesPerThread;
-
-			for (int32 Index = MeshBaseIndex; Index < MeshBaseNum; ++Index)
-			{
-				if (Index >= NumMeshes)
-				{
-					break;
-				}
-
-				//CriticalSection.Lock();
-				FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[GlobalLibrary.UpdateGroups[
-					UpdateContext.GroupIndex].RawIDs[Index]];
-
-				FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
-				//CriticalSection.Unlock();
-				if (!IsValid(Reference.FirstValidMeshLevelOfDetail))
-				{
-					return;
-				}
-
-				if (!IsValid(Instance))
-				{
-					return;
-				}
-
-				if (IsValid(Runtime.FootprintAsset))
-				{
-					Runtime.FootprintAsset->OnMeshPreSolveAnimationMeta_Concurrent(Runtime.GetMeshID(), ThreadContext);
-				}
-
-				// Need to get always updated
-				FTurboSequence_Utility_Lf::SolveAnimations(Runtime,
-				                                           GlobalLibrary,
-				                                           GlobalLibrary_RenderThread,
-				                                           Reference,
-				                                           DeltaTime,
-				                                           CurrentFrameCount,
-				                                           ThreadContext);
-
-				// Update Visibility first because the LodElement.InstanceMap is maybe not correct if the LOD change
-				// and for the initial check we only need the LOD index
-				const bool bIsVisiblePrevious = FTurboSequence_Utility_Lf::GetIsMeshVisible(Runtime, Reference);
-				const int16 PreviousLodIndex = Runtime.LodIndex;
-				FTurboSequence_Utility_Lf::IsMeshVisible(Runtime, Reference, GlobalLibrary.CameraViews);
-
-				FTurboSequence_Utility_Lf::UpdateCullingAndLevelOfDetail(
-					Runtime, Reference, GlobalLibrary.CameraViews, ThreadContext, GlobalLibrary);
-				FSkinnedMeshReferenceLodElement_Lf& LodElement = Reference.LevelOfDetails[Runtime.LodIndex];
-
-				FTurboSequence_Utility_Lf::UpdateDistanceUpdating(Runtime, DeltaTime);
-
-				if (IsValid(Runtime.FootprintAsset))
-				{
-					Runtime.bIsVisible = !LodElement.bIsFrustumCullingEnabled || Runtime.bIsVisible;
-					Runtime.EIsVisibleOverride = ETurboSequence_IsVisibleOverride_Lf::Default;
-
-					Runtime.FootprintAsset->OnSetMeshIsVisible_Concurrent(
-						Runtime.EIsVisibleOverride, Runtime.bIsVisible, Runtime.GetMeshID(),
-						ThreadContext);
-
-					Runtime.bIsVisible = FTurboSequence_Utility_Lf::GetIsMeshVisible(Runtime, Reference);
-
-					FTurboSequence_Utility_Lf::UpdateRenderInstanceLod_Concurrent(
-						Reference, Runtime, LodElement, Runtime.bIsVisible && LodElement.bIsRenderStateValid);
-
-					Runtime.EIsAnimatedOverride = ETurboSequence_IsAnimatedOverride_Lf::Default;
-					Runtime.FootprintAsset->OnSetMeshIsAnimated_Concurrent(
-						Runtime.EIsAnimatedOverride, FTurboSequence_Utility_Lf::GetIsMeshAnimated(Runtime, Reference),
-						Runtime.GetMeshID(),
-						ThreadContext);
-					if (FTurboSequence_Utility_Lf::GetIsMeshAnimated(Runtime, Reference))
-					{
-						Runtime.bForceVisibilityUpdatingThisFrame = true;
-					}
-				}
-				else
-				{
-					Runtime.EIsVisibleOverride = ETurboSequence_IsVisibleOverride_Lf::Default;
-					Runtime.EIsAnimatedOverride = ETurboSequence_IsAnimatedOverride_Lf::Default;
-
-					if (!LodElement.bIsFrustumCullingEnabled)
-					{
-						Runtime.bIsVisible = true;
-
-						FTurboSequence_Utility_Lf::UpdateRenderInstanceLod_Concurrent(
-							Reference, Runtime, LodElement, Runtime.bIsVisible && LodElement.bIsRenderStateValid);
-					}
-				}
-
-				if (IsValid(Runtime.FootprintAsset))
-				{
-					if (bIsVisiblePrevious != FTurboSequence_Utility_Lf::GetIsMeshVisible(Runtime, Reference))
-					{
-						Runtime.FootprintAsset->OnGetMeshVisibilityChanged_Concurrent(
-							FTurboSequence_Utility_Lf::GetIsMeshVisible(Runtime, Reference), Runtime.GetMeshID(),
-							ThreadContext);
-					}
-					if (PreviousLodIndex != Runtime.LodIndex)
-					{
-						Runtime.FootprintAsset->OnGetMeshLodChanged_Concurrent(
-							PreviousLodIndex, Runtime.LodIndex, Runtime.GetMeshID(), ThreadContext);
-					}
-				}
-
-				// Need to be at last because bIsVisible is updating later
-				if (LodElement.bIsRenderStateValid)
-				{
-					FTurboSequence_Utility_Lf::SetCustomDataForInstance(
-						Reference, GlobalLibrary.MeshIDToGlobalIndex[Runtime.GetMeshID()], LodElement.SkinWeightOffset,
-						Runtime, GlobalLibrary);
-				}
-
-				if (FTurboSequence_Utility_Lf::GetIsMeshVisible(Runtime, Reference) || Runtime.
-					bForceVisibilityUpdatingThisFrame)
-				{
-					FTurboSequence_Utility_Lf::UpdateInstanceTransform_Internal(
-						Reference, Runtime, GlobalLibrary.CameraViews);
-
-					FTurboSequence_Utility_Lf::UpdateRendererBounds(ThreadContext->CriticalSection, Reference, Runtime);
-
-					if ((FTurboSequence_Utility_Lf::GetIsMeshAnimated(Runtime, Reference) && Runtime.
-						bIsDistanceUpdatingThisFrame && LodElement.
-						bIsRenderStateValid) || (Runtime.bForceVisibilityUpdatingThisFrame && LodElement.
-						bIsRenderStateValid))
-					{
-						Runtime.bForceVisibilityUpdatingThisFrame = false;
-
-						ThreadContext->CriticalSection.Lock();
-						bMeshIsVisible = true;
-						ThreadContext->CriticalSection.Unlock();
-						if (IsValid(Runtime.FootprintAsset))
-						{
-							Runtime.FootprintAsset->OnMeshFinalRenderingUpdate_Concurrent(
-								Runtime.GetMeshID(), ThreadContext);
-						}
-
-						const uint8 MeshIdx = LodElement.GPUMeshIndex;
-						const int32 MeshID = Runtime.GetMeshID();
-						const TArray<FAnimationMetaData_RenderThread_Lf> Animations_RenderThread = Runtime.
-							AnimationMetaData_RenderThread;
-						TMap<uint16, FIKBoneData_Lf> IK_RenderThread;
-						if (Runtime.bIKDataInUse)
-						{
-							IK_RenderThread = Runtime.IKData;
-						}
-						const bool bUseIK = Runtime.bIKDataInUse;
-
-						ENQUEUE_RENDER_COMMAND(TurboSequence_UpdateRenderInstance_Lf)(
-							[&Library_RenderThread = GlobalLibrary_RenderThread, MeshID, MeshIdx, bUseIK,
-								Animations_RenderThread,
-								IK_RenderThread](FRHICommandListImmediate& RHICmdList)
-							{
-								FSkinnedMeshRuntime_RenderThread_Lf& Runtime_RenderThread = Library_RenderThread.
-									RuntimeSkinnedMeshes[MeshID];
-
-								Runtime_RenderThread.bIsVisible = true;
-								Runtime_RenderThread.CurrentGPUMeshIndex = MeshIdx;
-								Runtime_RenderThread.AnimationMetaData_RenderThread = Animations_RenderThread;
-								Runtime_RenderThread.bIKDataInUse = bUseIK;
-								Runtime_RenderThread.IKData = IK_RenderThread;
-							});
-					}
-				}
-
-				// Better to manage it ourselves for easier use....
-				FTurboSequence_Utility_Lf::ClearIKState(Runtime, ThreadContext->CriticalSection);
-			}
-		}, EParallelForFlags::BackgroundPriority);
-
-
-		FTurboSequence_Utility_Lf::UpdateAnimationLayerMasks(ThreadContext->CriticalSection, GlobalLibrary,
-		                                                     Library_RenderThread);
-
-		if (bMeshIsVisible && GlobalLibrary.PerReferenceData.Num() && IsValid(Instance->GlobalData) && IsValid(
-			Instance->GlobalData->TransformTexture_CurrentFrame))
-		{
-			GlobalLibrary.NumGroupsUpdatedThisFrame++;
-
-			GlobalLibrary_RenderThread.BoneTransformParams.NumDebugData = GET10_NUMBER;
-
-			GlobalLibrary_RenderThread.BoneTransformParams.bUse32BitTransformTexture = Instance->GlobalData->
-				bUseHighPrecisionAnimationMode;
-
-			const uint32 AnimationMaxNum = GlobalLibrary.AnimationLibraryMaxNum;
-
-			if (GlobalLibrary.AnimationLibraryDataAllocatedThisFrame.Num())
-			{
-				TArray<FVector4f> AnimationData = GlobalLibrary.AnimationLibraryDataAllocatedThisFrame;
-				GlobalLibrary.AnimationLibraryDataAllocatedThisFrame.Empty();
-
-				ENQUEUE_RENDER_COMMAND(TurboSequence_AddLibraryAnimationChunked_Lf)(
-					[&Library_RenderThread, AnimationData, AnimationMaxNum](FRHICommandListImmediate& RHICmdList)
-					{
-						Library_RenderThread.AnimationLibraryParams.SettingsInput.Append(AnimationData);
-
-						Library_RenderThread.AnimationLibraryMaxNum = AnimationMaxNum;
-					});
-			}
-		}
-
-		for (const TTuple<TObjectPtr<UTurboSequence_FootprintAsset_Lf>, int32>& Footprint : FootprintAssetsInUse)
-		{
-			if (IsValid(Footprint.Key))
-			{
-				Footprint.Key->OnPostUpdateGroupSolved_GameThread(DeltaTime, InWorld, UpdateContext);
-			}
-		}
-
-		FTurboSequence_Utility_Lf::UpdateCameras_2(LastFrameCameraTransforms, GlobalLibrary.CameraViews);
-
-		GlobalLibrary.bMaxNumCPUBonesChanged = false;
-
-		bMeshesSolvingAtTheMoment = false;
+		return;
 	}
-}
 
-void ATurboSequence_Manager_Lf::SolveMeshes_RenderThread(FRHICommandListImmediate& RHICmdList)
-{
 	if (!IsValid(Instance))
 	{
 		return;
 	}
 
-	if (!GlobalLibrary_RenderThread.RuntimeSkinnedMeshes.Num())
+	FTurboSequence_Utility_Lf::UpdateCameras_1(Instance->GlobalLibrary.CameraViews, LastFrameCameraTransforms, InWorld,
+	                                           DeltaTime);
+
+	if (!Instance->GlobalLibrary.CameraViews.Num())
 	{
 		return;
 	}
+	
+	const int64 CurrentFrameCount = UKismetSystemLibrary::GetFrameCount();
 
-
-	FCriticalSection CriticalSection;
-	const int32 NumMeshes = GlobalLibrary_RenderThread.RuntimeSkinnedMeshesHashMap.Num();
-	int16 NumThreads = FTurboSequence_Helper_Lf::NumCPUThreads() - GET1_NUMBER;
-	int32 NumMeshesPerThread = FMath::CeilToInt(static_cast<float>(NumMeshes) / static_cast<float>(NumThreads));
-
-	FTurboSequence_Utility_Lf::ResizeBuffers(GlobalLibrary_RenderThread, NumMeshes);
-
-
-	ParallelFor(NumThreads, [&](int32 ThreadsIndex)
+	//Reset bounds
+	for (auto& PerReferenceData : Instance->GlobalLibrary.PerReferenceData)
 	{
-		const int32 MeshBaseIndex = ThreadsIndex * NumMeshesPerThread;
-		const int32 MeshBaseNum = MeshBaseIndex + NumMeshesPerThread;
+		PerReferenceData.Value->ResetBounds();
+	}
 
-		for (int32 Index = MeshBaseIndex; Index < MeshBaseNum; ++Index)
+	INC_DWORD_STAT_BY(STAT_TotalMeshCount, Instance->GlobalLibrary.RuntimeSkinnedMeshes.Num());
+
+	Instance->GlobalLibrary.AnimationLibraryDataAllocatedThisFrame.Empty();
+	
+	for (auto & RuntimeSkinnedMesh : Instance->GlobalLibrary.RuntimeSkinnedMeshes)
+	{
+		FSkinnedMeshRuntime_Lf& Runtime = RuntimeSkinnedMesh.Value;
+		
+		// Need to get always updated
+		FTurboSequence_Utility_Lf::SolveAnimations(Runtime,
+		                                           Instance->GlobalLibrary,
+		                                           DeltaTime,
+		                                           CurrentFrameCount);
+			
+		Runtime.bIsVisible = Runtime.DataAsset->bIsFrustumCullingEnabled ? FTurboSequence_Utility_Lf::IsMeshVisible(Runtime, Instance->GlobalLibrary.CameraViews) : true;
+
+		
+		//DrawDebugString(InWorld,Runtime.WorldSpaceTransform.GetLocation(), FString::Printf(TEXT("CPU %d Viz %d"),Runtime.BoneTextureSkeletonIndex, Runtime.bIsVisible),nullptr, FColor::Cyan,0 );
+
+		if (Runtime.bIsVisible)
 		{
-			if (Index >= NumMeshes)
-			{
-				break;
-			}
-
-			FSkinnedMeshRuntime_RenderThread_Lf& Runtime = GlobalLibrary_RenderThread.RuntimeSkinnedMeshes[
-				GlobalLibrary_RenderThread.RuntimeSkinnedMeshesHashMap[Index]];
-
-			const FSkinnedMeshReference_RenderThread_Lf& Reference = GlobalLibrary_RenderThread.PerReferenceData[Runtime
-				.
-				DataAsset];
-
-			GlobalLibrary_RenderThread.BoneTransformParams.BoneSpaceAnimationIKIndex_RenderThread[Index] = INDEX_NONE;
-
-			if (Runtime.bIsVisible)
-			{
-				CriticalSection.Lock();
-				const int32 MeshIndex = GlobalLibrary_RenderThread.NumMeshesVisibleCurrentFrame;
-				if (!FTurboSequence_Utility_Lf::IsValidBufferIndex(GlobalLibrary_RenderThread, MeshIndex))
-				{
-					CriticalSection.Unlock();
-
-					UE_LOG(LogTemp, Warning, TEXT("Not Valid Buffer Index... -> Mesh Index %d | Data Asset -> %s"),
-					       MeshIndex,
-					       *Runtime.DataAsset.GetName())
-					Runtime.bIsVisible = false;
-					Runtime.bIKDataInUse = false;
-					return;
-				}
-				GlobalLibrary_RenderThread.NumMeshesVisibleCurrentFrame++;
-				CriticalSection.Unlock();
-
-				GlobalLibrary_RenderThread.BoneTransformParams.PerMeshCustomDataIndex_RenderThread[MeshIndex] =
-					GlobalLibrary_RenderThread.MeshIDToGlobalIndex[Runtime.GetMeshID()];
-
-				CriticalSection.Lock();
-				GlobalLibrary_RenderThread.NumAnimationsCurrentFrame += Runtime.AnimationMetaData_RenderThread.Num();
-
-
-				CriticalSection.Unlock();
-
-
-				if (Runtime.bIKDataInUse)
-				{
-					uint32 IKDataIndex = GET0_NUMBER;
-					uint16 IKBoneNum = GET0_NUMBER;
-					for (const TTuple<uint16, uint16>& BoneIdx : Reference.FirstLodGPUBonesCollection)
-					{
-						if (Runtime.IKData.Contains(BoneIdx.Key) && Runtime.IKData[BoneIdx.Key].
-							bIsInUsingWriteDataThisFrame && BoneIdx.Value != INDEX_NONE)
-						{
-							IKBoneNum++;
-						}
-
-						IKDataIndex += GET3_NUMBER;
-					}
-
-					if (IKBoneNum)
-					{
-						GlobalLibrary_RenderThread.BoneTransformParams.BoneSpaceAnimationIKIndex_RenderThread[Index] =
-							IKBoneNum;
-					}
-
-					CriticalSection.Lock();
-					GlobalLibrary_RenderThread.NumIKPixelCurrentFrame += IKBoneNum;
-					CriticalSection.Unlock();
-				}
-			}
-
-			Runtime.bIsVisible = false;
-			Runtime.bIKDataInUse = false;
-			// Runtime.IKData.Empty(); // Is now inside the minimal loop down below
+			INC_DWORD_STAT(STAT_VisibleMeshCount);
 		}
-	}, EParallelForFlags::BackgroundPriority);
+		
+		UTurboSequence_RenderData* RenderData = Instance->GlobalLibrary.PerReferenceData[Runtime.RenderHandle];
+			
+		RenderData->UpdateRendererBounds(Runtime.WorldSpaceTransform);
 
-	if (!GlobalLibrary_RenderThread.NumMeshesVisibleCurrentFrame)
+		for (const FSkinnedMeshAttachmentRuntime& Attachment : Runtime.Attachments)
+		{
+			UTurboSequence_RenderData* AttachmentRenderData = Instance->GlobalLibrary.PerReferenceData[Attachment.RenderHandle];
+
+			AttachmentRenderData->UpdateRendererBounds(Runtime.WorldSpaceTransform);
+		}
+	}
+
+	if (Instance->GlobalLibrary.PerReferenceData.Num() && IsValid(Instance->GlobalData) && IsValid(
+		Instance->GlobalData->TransformTexture_CurrentFrame))
+	{
+		GlobalLibrary_RenderThread.BoneTransformParams.NumDebugData = 10;
+
+		GlobalLibrary_RenderThread.BoneTransformParams.bUse32BitTransformTexture = Instance->GlobalData->
+			bUseHighPrecisionAnimationMode;
+
+		const uint32 AnimationMaxNum = Instance->GlobalLibrary.AnimationLibraryMaxNum;
+
+		if (Instance->GlobalLibrary.AnimationLibraryDataAllocatedThisFrame.Num())
+		{
+			TArray<FVector4f> AnimationData = Instance->GlobalLibrary.AnimationLibraryDataAllocatedThisFrame;
+
+			FSkinnedMeshGlobalLibrary_RenderThread_Lf& Library_RenderThread = GlobalLibrary_RenderThread;
+			
+			ENQUEUE_RENDER_COMMAND(TurboSequence_AddLibraryAnimationChunked_Lf)(
+				[&Library_RenderThread, AnimationData, AnimationMaxNum](FRHICommandListImmediate& RHICmdList)
+				{
+					Library_RenderThread.AnimationLibraryParams.SettingsInput.Append(AnimationData);
+
+					Library_RenderThread.AnimationLibraryMaxNum = AnimationMaxNum;
+				});
+		}
+
+		// for (auto & RuntimeSkinnedMesh : Instance->GlobalLibrary.RuntimeSkinnedMeshes)
+		// {
+		// 	const FSkinnedMeshRuntime_Lf& Runtime = RuntimeSkinnedMesh.Value;
+		//
+		// 	FColor LineColor(FColor::MakeRandomSeededColor(GetTypeHash(RuntimeSkinnedMesh.Key)));
+		// 	LineColor.A = 255; 
+		// 	FTurboSequence_Utility_Lf::DebugDrawSkeleton(Runtime, Instance->GlobalLibrary, LineColor,InWorld);
+		//
+		// 	//FTurboSequence_Utility_Lf::PrintAnimsToScreen(Runtime);
+		// }
+	}
+
+	FTurboSequence_Utility_Lf::UpdateCameras_2(LastFrameCameraTransforms, Instance->GlobalLibrary.CameraViews);
+}
+
+void ATurboSequence_Manager_Lf::SolveMeshes_RenderThread(FRHICommandListImmediate& RHICmdList)
+{
+	SCOPE_CYCLE_COUNTER(STAT_Solve_TurboSequenceMeshes_RT_Lf);
+	
+	if (!IsValid(Instance))
 	{
 		return;
 	}
 
+	FScopeLock ScopeLock(&Instance->RenderThreadDataConsistency);
+
+	if (!Instance->GlobalLibrary.RuntimeSkinnedMeshes.Num())
+	{
+		return;
+	}
+	
 	FMeshUnitComputeShader_Params_Lf& MeshParams = GlobalLibrary_RenderThread.BoneTransformParams;
 
-	MeshParams.NumMeshes = GlobalLibrary_RenderThread.NumMeshesVisibleCurrentFrame;
-	GlobalLibrary_RenderThread.NumMeshesVisibleCurrentFrame = GET0_NUMBER;
-
-	MeshParams.NumAnimations = GlobalLibrary_RenderThread.NumAnimationsCurrentFrame;
-	GlobalLibrary_RenderThread.NumAnimationsCurrentFrame = GET0_NUMBER;
-
-	MeshParams.NumIKData = GlobalLibrary_RenderThread.NumIKPixelCurrentFrame;
-	GlobalLibrary_RenderThread.NumIKPixelCurrentFrame = GET0_NUMBER;
-
-
-	int32 NumMeshes_RenderThread = MeshParams.NumMeshes;
-	int32 NumAnimations_RenderThread = FMath::Max(MeshParams.NumAnimations, 1);
-	int32 NumIKData_RenderThread = FMath::Max(MeshParams.NumIKData, 1);
-	int32 NumReferences_RenderThread = MeshParams.ReferenceNumCPUBones.Num();
-
-	MeshParams.ReferenceNumCPUBones_RenderThread.SetNumUninitialized(NumReferences_RenderThread);
-	MeshParams.PerMeshCustomDataIndex_Global_RenderThread.SetNumUninitialized(NumMeshes_RenderThread);
-	MeshParams.PerMeshCustomDataLod_RenderThread.SetNumUninitialized(NumMeshes_RenderThread);
-	MeshParams.PerMeshCustomDataCollectionIndex_RenderThread.SetNumUninitialized(NumMeshes_RenderThread);
-	MeshParams.AnimationStartIndex_RenderThread.SetNumUninitialized(NumMeshes_RenderThread);
-	MeshParams.AnimationEndIndex_RenderThread.SetNumUninitialized(NumMeshes_RenderThread);
-
-	MeshParams.AnimationFramePose0_RenderThread.SetNumUninitialized(NumAnimations_RenderThread);
-	MeshParams.AnimationFramePose1_RenderThread.SetNumUninitialized(NumAnimations_RenderThread);
-	MeshParams.AnimationFrameAlpha_RenderThread.SetNumUninitialized(NumAnimations_RenderThread);
-	MeshParams.AnimationWeights_RenderThread.SetNumUninitialized(NumAnimations_RenderThread);
-	MeshParams.AnimationLayerIndex_RenderThread.SetNumUninitialized(NumAnimations_RenderThread);
-
-	MeshParams.BoneSpaceAnimationIKData_RenderThread.SetNumUninitialized(NumIKData_RenderThread);
-	MeshParams.BoneSpaceAnimationIKInput_RenderThread.SetNumUninitialized(
-		NumIKData_RenderThread * FTurboSequence_Helper_Lf::NumGPUBoneIKBuffer);
-	MeshParams.BoneSpaceAnimationIKStartIndex_RenderThread.SetNumUninitialized(NumMeshes_RenderThread);
-	MeshParams.BoneSpaceAnimationIKEndIndex_RenderThread.SetNumUninitialized(NumMeshes_RenderThread);
-
-
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.ReferenceNumCPUBones_RenderThread, 0);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.PerMeshCustomDataIndex_Global_RenderThread, 1);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.PerMeshCustomDataLod_RenderThread, 2);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.PerMeshCustomDataCollectionIndex_RenderThread, 3);
-	//FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.SkinWeightOffsetLod_RenderThread, 4);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationStartIndex_RenderThread, 5);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationEndIndex_RenderThread, 6);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationFrameAlpha_RenderThread, 7);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationFramePose0_RenderThread, 8);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationFramePose1_RenderThread, 9);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationWeights_RenderThread, 10);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationLayerIndex_RenderThread, 11);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.BoneSpaceAnimationIKData_RenderThread, 12);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.BoneSpaceAnimationIKInput_RenderThread, 13);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.BoneSpaceAnimationIKStartIndex_RenderThread, 14);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.BoneSpaceAnimationIKEndIndex_RenderThread, 15);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.BoneSpaceAnimationIKIndex_RenderThread, 16);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.PerMeshCustomDataIndex_RenderThread, 17);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.ReferenceNumCPUBones, 18);
-	//FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationRawData_RenderThread, 19);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationLayers_RenderThread, 20);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.CPUInverseReferencePose, 21);
-	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.Indices, 22);
-	//FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationLocationWeights_RenderThread, 23);
-	//FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationRotationWeights_RenderThread, 24);
-	//FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationScaleWeights_RenderThread, 25);
-
-	// int32 CurrentAnimationIndex = GET0_NUMBER;
-	// int32 CurrentIKIndex = GET0_NUMBER;
-	// int32 CurrentIKDataIndex = GET0_NUMBER;
-	// for (int32 i = GET0_NUMBER; i < NumMeshes_RenderThread; ++i)
-	// {
-	// 	int32 CPUIndex = MeshParams.PerMeshCustomDataIndex_RenderThread[i];
-	// 	MeshParams.PerMeshCustomDataIndex_Global_RenderThread[i] = CPUIndex;
-	//
-	// 	const int32 LastAnimationIndex = CurrentAnimationIndex;
-	// 	MeshParams.AnimationStartIndex_RenderThread[i] = LastAnimationIndex;
-	//
-	// 	const int32 LastIKDataIndex = CurrentIKDataIndex;
-	// 	int16 NumIKBones = GET0_NUMBER;
-	//
-	// 	FSkinnedMeshRuntime_RenderThread_Lf& Runtime = GlobalLibrary_RenderThread.RuntimeSkinnedMeshes[
-	// 		GlobalLibrary_RenderThread.RuntimeSkinnedMeshesHashMap[CPUIndex]];
-	// 	const FSkinnedMeshReference_RenderThread_Lf& Reference = GlobalLibrary_RenderThread.PerReferenceData[
-	// 		Runtime.DataAsset];
-	//
-	// 	MeshParams.PerMeshCustomDataLod_RenderThread[i] = Runtime.CurrentGPUMeshIndex;
-	// 	MeshParams.PerMeshCustomDataCollectionIndex_RenderThread[i] = Reference.ReferenceCollectionIndex;
-	//
-	// 	int32 NumAnimations = Runtime.AnimationMetaData_RenderThread.Num();
-	// 	for (int32 AnimIdx = GET0_NUMBER; AnimIdx < NumAnimations; ++AnimIdx)
-	// 	{
-	// 		const FAnimationMetaData_RenderThread_Lf& Animation = Runtime.AnimationMetaData_RenderThread[
-	// 			AnimIdx];
-	//
-	// 		int32 BufferIndex = CurrentAnimationIndex;
-	//
-	// 		MeshParams.AnimationFramePose0_RenderThread[BufferIndex] = Animation.GPUAnimationIndex_0;
-	// 		MeshParams.AnimationWeights_RenderThread[BufferIndex] = Animation.FinalAnimationWeight;
-	// 		MeshParams.AnimationLayerIndex_RenderThread[BufferIndex] = Animation.LayerMaskIndex;
-	//
-	// 		CurrentAnimationIndex++;
-	// 	}
-	//
-	// 	MeshParams.AnimationEndIndex_RenderThread[i] = NumAnimations;
-	//
-	// 	// Really important to keep it INDEX_NONE otherwise it goes out of bounds when index
-	// 	// smoothing is activated
-	// 	if (int32 IKIndex = MeshParams.BoneSpaceAnimationIKIndex_RenderThread[CPUIndex]; IKIndex >
-	// 		INDEX_NONE)
-	// 	{
-	// 		// FSkinnedMeshRuntime_RenderThread_Lf& Runtime = GlobalLibrary_RenderThread.RuntimeSkinnedMeshes[
-	// 		// 	GlobalLibrary_RenderThread.RuntimeSkinnedMeshesHashMap[CPUIndex]];
-	// 		// const FSkinnedMeshReference_RenderThread_Lf& Reference = GlobalLibrary_RenderThread.
-	// 		// 	PerReferenceData[Runtime.DataAsset];
-	//
-	// 		for (const TTuple<uint16, uint16>& BoneIdx : Reference.FirstLodGPUBonesCollection)
-	// 		{
-	// 			if (Runtime.IKData.Contains(BoneIdx.Key) && Runtime.IKData[BoneIdx.Key].
-	// 				bIsInUsingWriteDataThisFrame && BoneIdx.Value != INDEX_NONE)
-	// 			{
-	// 				MeshParams.BoneSpaceAnimationIKData_RenderThread[CurrentIKDataIndex] = BoneIdx.Value;
-	//
-	// 				const FMatrix& BoneMatrix = Runtime.IKData[BoneIdx.Key].IKWriteTransform.
-	// 				                                                        ToMatrixWithScale();
-	//
-	// 				for (int32 M = GET0_NUMBER; M < GET3_NUMBER; ++M)
-	// 				{
-	// 					FVector4f BoneData;
-	// 					BoneData.X = BoneMatrix.M[GET0_NUMBER][M];
-	// 					BoneData.Y = BoneMatrix.M[GET1_NUMBER][M];
-	// 					BoneData.Z = BoneMatrix.M[GET2_NUMBER][M];
-	// 					BoneData.W = BoneMatrix.M[GET3_NUMBER][M];
-	//
-	// 					MeshParams.BoneSpaceAnimationIKInput_RenderThread[CurrentIKIndex] = BoneData;
-	//
-	// 					CurrentIKIndex++;
-	// 				}
-	//
-	// 				CurrentIKDataIndex++;
-	// 				NumIKBones++;
-	//
-	// 				// Runtime.IKData.Empty(); Replaced now without disposing the memory
-	// 				// Because we will write the new data anyway every IK frame
-	// 				Runtime.IKData[BoneIdx.Key].bIsInUsingWriteDataThisFrame = false;
-	// 			}
-	// 		}
-	// 	}
-	//
-	// 	// If valid data or not, the loop in the compute shader will sort it out
-	// 	// it's a ranged loop which mean if the LastIKDataIndex == CurrentIKDataIndex
-	// 	// it will never enter, because i < Count
-	// 	// otherwise if the data is writable the indices may always change
-	// 	MeshParams.BoneSpaceAnimationIKStartIndex_RenderThread[i] = LastIKDataIndex;
-	// 	MeshParams.BoneSpaceAnimationIKEndIndex_RenderThread[i] = NumIKBones;
-	// }
-	//
-	// if (!MeshParams.NumAnimations)
-	// {
-	// 	for (int32 i = GET0_NUMBER; i < NumMeshes_RenderThread; ++i)
-	// 	{
-	// 		MeshParams.AnimationStartIndex_RenderThread[i] = GET0_NUMBER;
-	// 		MeshParams.AnimationEndIndex_RenderThread[i] = GET0_NUMBER;
-	// 	}
-	// }
-	// if (!MeshParams.NumIKData)
-	// {
-	// 	for (int32 i = GET0_NUMBER; i < NumMeshes_RenderThread; ++i)
-	// 	{
-	// 		MeshParams.BoneSpaceAnimationIKStartIndex_RenderThread[i] = GET0_NUMBER;
-	// 		MeshParams.BoneSpaceAnimationIKEndIndex_RenderThread[i] = GET0_NUMBER;
-	// 	}
-	// }
-	//
-	// for (uint16 i = GET0_NUMBER; i < NumReferences_RenderThread; ++i)
-	// {
-	// 	MeshParams.ReferenceNumCPUBones_RenderThread[i] = MeshParams.ReferenceNumCPUBones[i];
-	// }
-
-	constexpr uint8 NumOperations = GET3_NUMBER;
-	ParallelFor(NumOperations, [&](int32 ThreadsIndex)
+	if(Instance->GlobalLibrary.bMasksNeedRebuilding || Instance->GlobalLibrary.MasksBuiltBoneCount != Instance->GlobalLibrary.MaxNumCPUBones)
 	{
-		if (ThreadsIndex == GET0_NUMBER)
+		Instance->GlobalLibrary.ProxyToIndex.Reset();
+
+		int32 MaskCount = 0;
+
+		const int32 NumCPUBones = Instance->GlobalLibrary.MaxNumCPUBones;
+
+		const int32 NumLayers = Instance->GlobalLibrary.AnimationBlendLayerMasks.Num() * NumCPUBones;
+		//MeshParams.AnimationLayers_RenderThread.SetNumUninitialized(NumLayers);
+
+		MeshParams.AnimationLayers_RenderThread.Reset(NumLayers);
+		
+		for (const auto & AnimationBlendLayerMask : Instance->GlobalLibrary.AnimationBlendLayerMasks)
 		{
-			for (int32 i = GET0_NUMBER; i < NumMeshes_RenderThread; ++i)
+			Instance->GlobalLibrary.ProxyToIndex.Add(AnimationBlendLayerMask.Key, MaskCount++);
+
+			for (uint16 RawAnimationLayer : AnimationBlendLayerMask.Value.RawAnimationLayers)
 			{
-				int32 CPUIndex = MeshParams.PerMeshCustomDataIndex_RenderThread[i];
-				MeshParams.PerMeshCustomDataIndex_Global_RenderThread[i] = CPUIndex;
-
-				const FSkinnedMeshRuntime_RenderThread_Lf& Runtime = GlobalLibrary_RenderThread.RuntimeSkinnedMeshes[
-					GlobalLibrary_RenderThread.RuntimeSkinnedMeshesHashMap[CPUIndex]];
-				const FSkinnedMeshReference_RenderThread_Lf& Reference = GlobalLibrary_RenderThread.PerReferenceData[
-					Runtime.DataAsset];
-
-				MeshParams.PerMeshCustomDataLod_RenderThread[i] = Runtime.CurrentGPUMeshIndex;
-				MeshParams.PerMeshCustomDataCollectionIndex_RenderThread[i] = Reference.ReferenceCollectionIndex;
+				MeshParams.AnimationLayers_RenderThread.Add(RawAnimationLayer);
 			}
 
-			for (uint16 i = GET0_NUMBER; i < NumReferences_RenderThread; ++i)
+			//Pad to NumCPUBones
+			for(int32 BoneIndex = AnimationBlendLayerMask.Value.RawAnimationLayers.Num(); BoneIndex < NumCPUBones; ++BoneIndex)
 			{
-				MeshParams.ReferenceNumCPUBones_RenderThread[i] = MeshParams.ReferenceNumCPUBones[i];
+				MeshParams.AnimationLayers_RenderThread.Add(0);
 			}
 		}
-		else if (ThreadsIndex == GET1_NUMBER)
+		
+		Instance->GlobalLibrary.bMasksNeedRebuilding = false;
+		Instance->GlobalLibrary.MasksBuiltBoneCount = Instance->GlobalLibrary.MaxNumCPUBones;
+	}
+
+	if(Instance->GlobalLibrary.bRefreshAsyncChunkedMeshData)
+	{
+		FTurboSequence_Utility_Lf::RefreshAsyncChunkedMeshData(Instance->GlobalLibrary, GlobalLibrary_RenderThread);
+		
+		Instance->GlobalLibrary.bRefreshAsyncChunkedMeshData = false;
+	}
+
+
+
+	int32 NumMeshesVisibleCurrentFrame = 0;
+
+	MeshParams.PerMeshCustomDataIndex_Global_RenderThread.Reset();
+	MeshParams.PerMeshCustomDataCollectionIndex_RenderThread.Reset();
+	MeshParams.AnimationStartIndex_RenderThread.Reset();
+	MeshParams.AnimationFramePose0_RenderThread.Reset();
+	MeshParams.AnimationFramePose1_RenderThread.Reset();
+	MeshParams.AnimationFrameAlpha_RenderThread.Reset();
+	MeshParams.AnimationWeights_RenderThread.Reset();
+	MeshParams.AnimationLayerIndex_RenderThread.Reset();
+	MeshParams.AnimationEndIndex_RenderThread.Reset();
+	MeshParams.BoneSpaceAnimationIKData_RenderThread.Reset();
+	MeshParams.BoneSpaceAnimationIKInput_RenderThread.Reset();
+	MeshParams.BoneSpaceAnimationIKStartIndex_RenderThread.Reset();
+	MeshParams.BoneSpaceAnimationIKEndIndex_RenderThread.Reset();
+	
+	for (auto & RuntimeSkinnedMesh : Instance->GlobalLibrary.RuntimeSkinnedMeshes)
+	{
+		FSkinnedMeshRuntime_Lf& Runtime = RuntimeSkinnedMesh.Value;
+		
+		if (!Runtime.bIsVisible)
 		{
-			if (MeshParams.NumAnimations)
+			continue;
+		}
+		
+		NumMeshesVisibleCurrentFrame++;
+		
+		//Mesh to skeleton reference
+		MeshParams.PerMeshCustomDataIndex_Global_RenderThread.Add(Runtime.BoneTextureSkeletonIndex);
+
+		int32 SkeletonIndex = Instance->GlobalLibrary.PerReferenceDataKeys.Find(Runtime.DataAsset);
+		
+		ensure(SkeletonIndex != INDEX_NONE);
+		
+		MeshParams.PerMeshCustomDataCollectionIndex_RenderThread.Add(SkeletonIndex);
+		
+		//Animations
+		int32 LastAnimationIndex = MeshParams.AnimationFramePose0_RenderThread.Num();
+		
+		MeshParams.AnimationStartIndex_RenderThread.Add(LastAnimationIndex);
+
+		for (const FAnimationMetaData_Lf& Animation : Runtime.AnimationMetaData)
+		{
+			MeshParams.AnimationFramePose0_RenderThread.Add(Animation.GPUAnimationIndex_0);
+			MeshParams.AnimationFramePose1_RenderThread.Add(Animation.GPUAnimationIndex_1);
+			MeshParams.AnimationFrameAlpha_RenderThread.Add(Animation.FrameAlpha * 0x7FFF);
+			MeshParams.AnimationWeights_RenderThread.Add(Animation.FinalAnimationWeight * 0x7FFF);
+
+			FBoneMaskBuiltProxyHandle BoneMaskBuiltProxyHandle = Animation.Settings.MaskDefinition.GetBuiltProxyHandle(Runtime.DataAsset);
+
+			int* LayerMaskIndex = Instance->GlobalLibrary.ProxyToIndex.Find(BoneMaskBuiltProxyHandle);
+
+			MeshParams.AnimationLayerIndex_RenderThread.Add(*LayerMaskIndex);
+		}
+
+		int32 AnimationCount = Runtime.AnimationMetaData.Num();
+		MeshParams.AnimationEndIndex_RenderThread.Add(AnimationCount);
+
+		//ID data
+		int32 NumIKBones = 0;
+		int32 LastIKDataIndex = MeshParams.BoneSpaceAnimationIKData_RenderThread.Num();
+
+		for (auto & IKData : Runtime.OverrideBoneTransforms)
+		{
+			const int32 CPUBoneIndex = IKData.Key;
+			
+			if(const int* GPUBoneIndex = Runtime.DataAsset->CPUBoneToGPUBoneIndicesMap.Find(CPUBoneIndex))
 			{
-				int32 CurrentAnimationIndex = GET0_NUMBER;
-				//int32 CurrentPerBoneWeightIndex = GET0_NUMBER;
-				for (int32 i = GET0_NUMBER; i < NumMeshes_RenderThread; ++i)
+				MeshParams.BoneSpaceAnimationIKData_RenderThread.Add(*GPUBoneIndex);
+
+				const FMatrix& BoneMatrix = IKData.Value.OverrideTransform.ToMatrixWithScale();
+
+				for (int32 M = 0; M < 3; ++M)
 				{
-					int32 CPUIndex = MeshParams.PerMeshCustomDataIndex_RenderThread[i];
-					const int32 LastAnimationIndex = CurrentAnimationIndex;
+					FVector4f BoneData;
+					BoneData.X = BoneMatrix.M[0][M];
+					BoneData.Y = BoneMatrix.M[1][M];
+					BoneData.Z = BoneMatrix.M[2][M];
+					BoneData.W = BoneMatrix.M[3][M];
 
-					MeshParams.AnimationStartIndex_RenderThread[i] = LastAnimationIndex;
-
-					const FSkinnedMeshRuntime_RenderThread_Lf& Runtime = GlobalLibrary_RenderThread.RuntimeSkinnedMeshes
-						[GlobalLibrary_RenderThread.RuntimeSkinnedMeshesHashMap[CPUIndex]];
-					//const FSkinnedMeshReference_RenderThread_Lf& Reference = GlobalLibrary_RenderThread.PerReferenceData[Runtime.DataAsset];
-
-					int32 NumAnimations = Runtime.AnimationMetaData_RenderThread.Num();
-					//UE_LOG(LogTemp, Warning, TEXT("%d | %d"), Runtime.GetMeshID(), NumAnimations);
-					for (int32 AnimIdx = GET0_NUMBER; AnimIdx < NumAnimations; ++AnimIdx)
-					{
-						const FAnimationMetaData_RenderThread_Lf& Animation = Runtime.AnimationMetaData_RenderThread[
-							AnimIdx];
-
-						int32 BufferIndex = CurrentAnimationIndex;
-
-						MeshParams.AnimationFramePose0_RenderThread[BufferIndex] = Animation.GPUAnimationIndex_0;
-						MeshParams.AnimationFramePose1_RenderThread[BufferIndex] = Animation.GPUAnimationIndex_1;
-						MeshParams.AnimationFrameAlpha_RenderThread[BufferIndex] = Animation.FrameAlpha;
-						MeshParams.AnimationWeights_RenderThread[BufferIndex] = Animation.FinalAnimationWeight;
-						MeshParams.AnimationLayerIndex_RenderThread[BufferIndex] = Animation.LayerMaskIndex;
-
-						CurrentAnimationIndex++;
-					}
-
-					MeshParams.AnimationEndIndex_RenderThread[i] = NumAnimations;
+					MeshParams.BoneSpaceAnimationIKInput_RenderThread.Add(BoneData);
 				}
-			}
-			else
-			{
-				for (int32 i = GET0_NUMBER; i < NumMeshes_RenderThread; ++i)
-				{
-					MeshParams.AnimationStartIndex_RenderThread[i] = GET0_NUMBER;
-					MeshParams.AnimationEndIndex_RenderThread[i] = GET0_NUMBER;
-				}
+						
+				NumIKBones++;
 			}
 		}
-		else if (ThreadsIndex == GET2_NUMBER)
-		{
-			if (MeshParams.NumIKData)
-			{
-				int32 CurrentIKIndex = GET0_NUMBER;
-				int32 CurrentIKDataIndex = GET0_NUMBER;
-				for (int32 i = GET0_NUMBER; i < NumMeshes_RenderThread; ++i)
-				{
-					int32 CPUIndex = MeshParams.PerMeshCustomDataIndex_RenderThread[i];
-					const int32 LastIKDataIndex = CurrentIKDataIndex;
 
-					int16 NumIKBones = GET0_NUMBER;
-
-					// Really important to keep it INDEX_NONE otherwise it goes out of bounds when index
-					// smoothing is activated
-					if (int32 IKIndex = MeshParams.BoneSpaceAnimationIKIndex_RenderThread[CPUIndex]; IKIndex >
-						INDEX_NONE)
-					{
-						FSkinnedMeshRuntime_RenderThread_Lf& Runtime = GlobalLibrary_RenderThread.RuntimeSkinnedMeshes[
-							GlobalLibrary_RenderThread.RuntimeSkinnedMeshesHashMap[CPUIndex]];
-						const FSkinnedMeshReference_RenderThread_Lf& Reference = GlobalLibrary_RenderThread.
-							PerReferenceData[Runtime.DataAsset];
-
-						for (const TTuple<uint16, uint16>& BoneIdx : Reference.FirstLodGPUBonesCollection)
-						{
-							if (Runtime.IKData.Contains(BoneIdx.Key) && Runtime.IKData[BoneIdx.Key].
-								bIsInUsingWriteDataThisFrame && BoneIdx.Value != INDEX_NONE)
-							{
-								MeshParams.BoneSpaceAnimationIKData_RenderThread[CurrentIKDataIndex] = BoneIdx.Value;
-
-								const FMatrix& BoneMatrix = Runtime.IKData[BoneIdx.Key].IKWriteTransform.
-									ToMatrixWithScale();
-
-								for (int32 M = GET0_NUMBER; M < GET3_NUMBER; ++M)
-								{
-									FVector4f BoneData;
-									BoneData.X = BoneMatrix.M[GET0_NUMBER][M];
-									BoneData.Y = BoneMatrix.M[GET1_NUMBER][M];
-									BoneData.Z = BoneMatrix.M[GET2_NUMBER][M];
-									BoneData.W = BoneMatrix.M[GET3_NUMBER][M];
-
-									MeshParams.BoneSpaceAnimationIKInput_RenderThread[CurrentIKIndex] = BoneData;
-
-									CurrentIKIndex++;
-								}
-
-								CurrentIKDataIndex++;
-								NumIKBones++;
-
-								// Runtime.IKData.Empty(); Replaced now without disposing the memory
-								// Because we will write the new data anyway every IK frame
-								Runtime.IKData[BoneIdx.Key].bIsInUsingWriteDataThisFrame = false;
-							}
-						}
-					}
-
-					// If valid data or not, the loop in the compute shader will sort it out
-					// it's a ranged loop which mean if the LastIKDataIndex == CurrentIKDataIndex
-					// it will never enter, because i < Count
-					// otherwise if the data is writable the indices may always change
-					MeshParams.BoneSpaceAnimationIKStartIndex_RenderThread[i] = LastIKDataIndex;
-					MeshParams.BoneSpaceAnimationIKEndIndex_RenderThread[i] = NumIKBones;
-				}
-			}
-			else
-			{
-				for (int32 i = GET0_NUMBER; i < NumMeshes_RenderThread; ++i)
-				{
-					MeshParams.BoneSpaceAnimationIKStartIndex_RenderThread[i] = GET0_NUMBER;
-					MeshParams.BoneSpaceAnimationIKEndIndex_RenderThread[i] = GET0_NUMBER;
-				}
-			}
-		}
-	}, EParallelForFlags::BackgroundPriority);
-}
-
-void ATurboSequence_Manager_Lf::AddInstanceToUpdateGroup_RawID_Concurrent(const int32 GroupIndex, int32 MeshID)
-{
-	{
-		FScopeLock Lock(&Instance->GetThreadContext()->CriticalSection);
-
-		if (!GlobalLibrary.UpdateGroups.IsValidIndex(GroupIndex))
-		{
-			GlobalLibrary.UpdateGroups.SetNum(GroupIndex + GET1_NUMBER);
-		}
-
-		FTurboSequence_UpdateGroup_Lf& Group = GlobalLibrary.UpdateGroups[GroupIndex];
-
-		if (!Group.RawIDData.Contains(MeshID))
-		{
-			Group.RawIDData.Add(MeshID, Group.RawIDData.Num());
-			Group.RawIDs.Add(MeshID);
-		}
-	}
-}
-
-void ATurboSequence_Manager_Lf::AddInstanceToUpdateGroup_Concurrent(const int32 GroupIndex,
-                                                                    const FTurboSequence_MinimalMeshData_Lf& MeshData)
-{
-	{
-		FScopeLock Lock(&Instance->GetThreadContext()->CriticalSection);
-
-		if (!GlobalLibrary.UpdateGroups.IsValidIndex(GroupIndex))
-		{
-			GlobalLibrary.UpdateGroups.SetNum(GroupIndex + GET1_NUMBER);
-		}
-
-		FTurboSequence_UpdateGroup_Lf& Group = GlobalLibrary.UpdateGroups[GroupIndex];
-
-		if (!Group.RawIDData.Contains(MeshData.RootMotionMeshID))
-		{
-			Group.RawIDData.Add(MeshData.RootMotionMeshID, Group.RawIDData.Num());
-			Group.RawIDs.Add(MeshData.RootMotionMeshID);
-			Group.MeshIDToMinimal.Add(MeshData, FIntVector2(GET1_NUMBER, Group.MeshIDToMinimal.Num()));
-			Group.RawMinimalData.Add(MeshData);
-			for (int32 MeshID : MeshData.CustomizableMeshIDs)
-			{
-				if (!Group.RawIDData.Contains(MeshID))
-				{
-					Group.RawIDData.Add(MeshID, Group.RawIDData.Num());
-					Group.RawIDs.Add(MeshID);
-					Group.MeshIDToMinimal[MeshData].X++;
-				}
-			}
-		}
-	}
-}
-
-void ATurboSequence_Manager_Lf::RemoveInstanceFromUpdateGroup_RawID_Concurrent(const int32 GroupIndex, int32 MeshID)
-{
-	//int32 RawIndexToRemove = INDEX_NONE;
-	{
-		FScopeLock Lock(&Instance->GetThreadContext()->CriticalSection);
-
-		if (GlobalLibrary.UpdateGroups.IsValidIndex(GroupIndex))
-		{
-			FTurboSequence_UpdateGroup_Lf& Group = GlobalLibrary.UpdateGroups[GroupIndex];
-
-			if (Group.RawIDData.Contains(MeshID))
-			{
-				const int32 RawIndexToRemove = Group.RawIDData[MeshID];
-
-				Group.RawIDData.Remove(MeshID);
-				Group.RawIDs.RemoveAt(RawIndexToRemove);
-
-				for (TTuple<int32, int32>& Data : Group.RawIDData)
-				{
-					if (Data.Value > RawIndexToRemove)
-					{
-						Data.Value--;
-					}
-				}
-			}
-		}
-	}
-}
-
-void ATurboSequence_Manager_Lf::RemoveInstanceFromUpdateGroup_Concurrent(const int32 GroupIndex,
-                                                                         const FTurboSequence_MinimalMeshData_Lf&
-                                                                         MeshData)
-{
-	RemoveInstanceFromUpdateGroup_RawID_Concurrent(GroupIndex, MeshData.RootMotionMeshID);
-	for (int32 MeshID : MeshData.CustomizableMeshIDs)
-	{
-		RemoveInstanceFromUpdateGroup_RawID_Concurrent(GroupIndex, MeshID);
-	}
-}
-
-int32 ATurboSequence_Manager_Lf::GetNumMeshDataInUpdateGroup_Concurrent(const int32 GroupIndex)
-{
-	{
-		FScopeLock Lock(&Instance->GetThreadContext()->CriticalSection);
-
-		if (!GlobalLibrary.UpdateGroups.IsValidIndex(GroupIndex))
-		{
-			return INDEX_NONE;
-		}
-
-		return GlobalLibrary.UpdateGroups[GroupIndex].MeshIDToMinimal.Num();
-	}
-}
-
-int32 ATurboSequence_Manager_Lf::GetNumMeshIDsInUpdateGroup_RawID_Concurrent(const int32 GroupIndex)
-{
-	{
-		FScopeLock Lock(&Instance->GetThreadContext()->CriticalSection);
-
-		if (!GlobalLibrary.UpdateGroups.IsValidIndex(GroupIndex))
-		{
-			return INDEX_NONE;
-		}
-
-		return GlobalLibrary.UpdateGroups[GroupIndex].RawIDData.Num();
-	}
-}
-
-FTurboSequence_MinimalMeshData_Lf ATurboSequence_Manager_Lf::GetMeshDataInUpdateGroupFromIndex_Concurrent(
-	const int32 GroupIndex, const int32 IndexInGroup)
-{
-	FScopeLock Lock(&Instance->GetThreadContext()->CriticalSection);
-
-	if (!GlobalLibrary.UpdateGroups.IsValidIndex(GroupIndex))
-	{
-		return FTurboSequence_MinimalMeshData_Lf(false);
+		MeshParams.BoneSpaceAnimationIKStartIndex_RenderThread.Add(LastIKDataIndex);
+		MeshParams.BoneSpaceAnimationIKEndIndex_RenderThread.Add(NumIKBones);
 	}
 
-	FTurboSequence_UpdateGroup_Lf& Group = GlobalLibrary.UpdateGroups[GroupIndex];
-
-	if (!Group.RawMinimalData.IsValidIndex(IndexInGroup))
+	MeshParams.ReferenceNumCPUBones_RenderThread.Reset();
+	
+	for (int32 i = 0; i < MeshParams.ReferenceNumCPUBones.Num(); ++i)
 	{
-		return FTurboSequence_MinimalMeshData_Lf(false);
+		MeshParams.ReferenceNumCPUBones_RenderThread.Add(MeshParams.ReferenceNumCPUBones[i]);
 	}
 
-	return Group.RawMinimalData[IndexInGroup];
-}
+	MeshParams.NumMeshes = NumMeshesVisibleCurrentFrame;
 
-int32 ATurboSequence_Manager_Lf::GetMeshIDInUpdateGroupFromIndex_Concurrent(const int32 GroupIndex,
-                                                                            const int32 IndexInGroup)
-{
-	FScopeLock Lock(&Instance->GetThreadContext()->CriticalSection);
-
-	if (!GlobalLibrary.UpdateGroups.IsValidIndex(GroupIndex))
-	{
-		return INDEX_NONE;
-	}
-
-	FTurboSequence_UpdateGroup_Lf& Group = GlobalLibrary.UpdateGroups[GroupIndex];
-
-	if (!Group.RawIDs.IsValidIndex(IndexInGroup))
-	{
-		return INDEX_NONE;
-	}
-
-	return Group.RawIDs[IndexInGroup];
-}
-
-bool ATurboSequence_Manager_Lf::ContainsMeshDataInUpdateGroup_Concurrent(
-	const FTurboSequence_MinimalMeshData_Lf& MeshData, const int32 GroupIndex)
-{
-	FScopeLock Lock(&Instance->GetThreadContext()->CriticalSection);
-
-	if (!GlobalLibrary.UpdateGroups.IsValidIndex(GroupIndex))
-	{
-		return false;
-	}
-
-	FTurboSequence_UpdateGroup_Lf& Group = GlobalLibrary.UpdateGroups[GroupIndex];
-
-	if (!Group.RawIDData.Contains(MeshData.RootMotionMeshID))
-	{
-		return false;
-	}
-
-	return true;
-}
-
-bool ATurboSequence_Manager_Lf::ContainsMeshIDInUpdateGroup_Concurrent(const int32 MeshID, const int32 GroupIndex)
-{
-	FScopeLock Lock(&Instance->GetThreadContext()->CriticalSection);
-
-	if (!GlobalLibrary.UpdateGroups.IsValidIndex(GroupIndex))
-	{
-		return false;
-	}
-
-	FTurboSequence_UpdateGroup_Lf& Group = GlobalLibrary.UpdateGroups[GroupIndex];
-
-	if (!Group.RawIDData.Contains(MeshID))
-	{
-		return false;
-	}
-
-	return true;
-}
-
-FTurboSequence_MinimalMeshData_Lf ATurboSequence_Manager_Lf::GetMeshDataFromMeshID_Concurrent(const int32 MeshID)
-{
-	return GlobalLibrary.MeshIDToMinimalData[MeshID];
+	//Need elements in all arrays (seems to be a compute requirement)
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.ReferenceNumCPUBones_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.PerMeshCustomDataIndex_Global_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.PerMeshCustomDataCollectionIndex_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationStartIndex_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationEndIndex_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationFrameAlpha_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationFramePose0_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationFramePose1_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationWeights_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationLayerIndex_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.BoneSpaceAnimationIKData_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.BoneSpaceAnimationIKInput_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.BoneSpaceAnimationIKStartIndex_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.BoneSpaceAnimationIKEndIndex_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.AnimationLayers_RenderThread);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.CPUInverseReferencePose);
+	FTurboSequence_Helper_Lf::CheckArrayHasSize(MeshParams.Indices);
 }
 
 void ATurboSequence_Manager_Lf::CleanManager_GameThread(bool bIsEndPlay)
@@ -1551,130 +1019,52 @@ void ATurboSequence_Manager_Lf::CleanManager_GameThread(bool bIsEndPlay)
 	}
 }
 
-FTransform ATurboSequence_Manager_Lf::GetMeshWorldSpaceTransform_Concurrent(
-	const FTurboSequence_MinimalMeshData_Lf& MeshData)
+FTransform ATurboSequence_Manager_Lf::GetMeshWorldSpaceTransform(FBaseSkeletalMeshHandle MeshID)
 {
-	if (MeshData.IsMeshDataValid())
+	if(const FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
 	{
-		return GetMeshWorldSpaceTransform_RawID_Concurrent(MeshData.RootMotionMeshID);
+		return Runtime->WorldSpaceTransform;
 	}
+
 	return FTransform::Identity;
 }
 
-FTransform ATurboSequence_Manager_Lf::GetMeshWorldSpaceTransform_RawID_Concurrent(int32 MeshID)
+void ATurboSequence_Manager_Lf::SetMeshWorldSpaceTransform(
+	const FBaseSkeletalMeshHandle MeshID, const FTransform& Transform)
 {
-	if (GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
+	if(FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
 	{
-		return GlobalLibrary.RuntimeSkinnedMeshes[MeshID].WorldSpaceTransform;
-	}
-	return FTransform::Identity;
-}
+		Runtime->WorldSpaceTransform = Transform;
 
-float ATurboSequence_Manager_Lf::GetMeshClosestCameraDistance_Concurrent(
-	const FTurboSequence_MinimalMeshData_Lf& MeshData)
-{
-	if (MeshData.IsMeshDataValid())
-	{
-		return GetMeshClosestCameraDistance_RawID_Concurrent(MeshData.RootMotionMeshID);
-	}
-	return INDEX_NONE;
-}
+		UTurboSequence_RenderData* RenderData = Instance->GlobalLibrary.PerReferenceData[Runtime->RenderHandle];
 
-float ATurboSequence_Manager_Lf::GetMeshClosestCameraDistance_RawID_Concurrent(int32 MeshID)
-{
-	if (GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
-	{
-		return GlobalLibrary.RuntimeSkinnedMeshes[MeshID].ClosestCameraDistance;
-	}
-	return INDEX_NONE;
-}
+		RenderData->UpdateInstanceTransform(MeshID, Transform);
 
-void ATurboSequence_Manager_Lf::SetMeshWorldSpaceLocationRotationScale_Concurrent(
-	const FTurboSequence_MinimalMeshData_Lf& MeshData, const FVector Location, const FQuat Rotation,
-	const FVector Scale, const bool bForce)
-{
-	if (MeshData.IsMeshDataValid())
-	{
-		SetMeshWorldSpaceLocationRotationScale_RawID_Concurrent(MeshData.RootMotionMeshID, Location, Rotation,
-		                                                        Scale, bForce);
-		for (int32 MeshID : MeshData.CustomizableMeshIDs)
+		//Also update the attachment transforms
+		for (const auto& [AttachmentHandle, RenderHandle] : Runtime->Attachments)
 		{
-			SetMeshWorldSpaceLocationRotationScale_RawID_Concurrent(MeshID, Location, Rotation, Scale, bForce);
+			UTurboSequence_RenderData* AttachmentRenderData = Instance->GlobalLibrary.PerReferenceData[RenderHandle];
+			
+			AttachmentRenderData->UpdateInstanceTransform(AttachmentHandle, Transform);
+		}
+
+		for (UNiagaraComponent* NiagaraComponent : Runtime->AttachedParticles)
+		{
+			NiagaraComponent->SetWorldTransform(Transform);
 		}
 	}
 }
 
-void ATurboSequence_Manager_Lf::SetMeshWorldSpaceLocationRotationScale_RawID_Concurrent(int32 MeshID,
-	const FVector Location, const FQuat Rotation, const FVector Scale, const bool bForce)
-{
-	if (GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
-	{
-		FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-		Runtime.WorldSpaceTransform.SetLocation(Location);
-		Runtime.WorldSpaceTransform.SetRotation(Rotation);
-		Runtime.WorldSpaceTransform.SetScale3D(Scale);
-		if (FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset]; Reference.
-			RenderData[Runtime.MaterialsHash].InstanceMap.Contains(MeshID))
-		{
-			FTurboSequence_Utility_Lf::UpdateInstanceTransform_Concurrent(
-				Reference, Runtime,
-				Runtime.WorldSpaceTransform, bForce);
-		}
-	}
-}
-
-void ATurboSequence_Manager_Lf::SetMeshWorldSpaceTransform_Concurrent(const FTurboSequence_MinimalMeshData_Lf& MeshData,
-                                                                      const FTransform Transform, const bool bForce)
-{
-	if (MeshData.IsMeshDataValid())
-	{
-		SetMeshWorldSpaceTransform_RawID_Concurrent(MeshData.RootMotionMeshID, Transform, bForce);
-		for (int32 MeshID : MeshData.CustomizableMeshIDs)
-		{
-			SetMeshWorldSpaceTransform_RawID_Concurrent(MeshID, Transform, bForce);
-		}
-	}
-}
-
-void ATurboSequence_Manager_Lf::SetMeshWorldSpaceTransform_RawID_Concurrent(
-	int32 MeshID, const FTransform Transform, const bool bForce)
-{
-	if (GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
-	{
-		FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-		Runtime.WorldSpaceTransform = Transform;
-		if (FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset]; Reference.
-			RenderData[Runtime.MaterialsHash].InstanceMap.Contains(MeshID))
-		{
-			FTurboSequence_Utility_Lf::UpdateInstanceTransform_Concurrent(
-				Reference, Runtime,
-				Runtime.WorldSpaceTransform, bForce);
-		}
-	}
-}
-
-bool ATurboSequence_Manager_Lf::GetRootMotionTransform_Concurrent(FTransform& OutRootMotion,
-                                                                  const FTurboSequence_MinimalMeshData_Lf& MeshData,
-                                                                  float DeltaTime, const EBoneSpaces::Type Space)
-{
-	if (MeshData.IsMeshDataValid())
-	{
-		return GetRootMotionTransform_RawID_Concurrent(OutRootMotion, MeshData.RootMotionMeshID, DeltaTime, Space);
-	}
-	return false;
-}
-
-bool ATurboSequence_Manager_Lf::GetRootMotionTransform_RawID_Concurrent(FTransform& OutRootMotion, int32 MeshID,
+bool ATurboSequence_Manager_Lf::GetRootMotionTransform(FTransform& OutRootMotion, FBaseSkeletalMeshHandle MeshID,
                                                                         float DeltaTime, const EBoneSpaces::Type Space)
 {
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
+	if (!Instance->GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
 	{
 		return false;
 	}
 
-	const FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-	const FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
-	FTurboSequence_Utility_Lf::ExtractRootMotionFromAnimations(OutRootMotion, Runtime, Reference, DeltaTime);
+	const FSkinnedMeshRuntime_Lf& Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
+	FTurboSequence_Utility_Lf::ExtractRootMotionFromAnimations(OutRootMotion, Runtime, DeltaTime);
 
 	if (Space == EBoneSpaces::ComponentSpace)
 	{
@@ -1686,35 +1076,20 @@ bool ATurboSequence_Manager_Lf::GetRootMotionTransform_RawID_Concurrent(FTransfo
 	return true;
 }
 
-void ATurboSequence_Manager_Lf::MoveMeshWithRootMotion_Concurrent(const FTurboSequence_MinimalMeshData_Lf& MeshData,
-                                                                  float DeltaTime, const bool bZeroZAxis,
-                                                                  const bool bIncludeScale)
-{
-	if (MeshData.IsMeshDataValid())
-	{
-		MoveMeshWithRootMotion_RawID_Concurrent(MeshData.RootMotionMeshID, DeltaTime, bZeroZAxis, bIncludeScale);
-		const FTransform& MeshTransform = GetMeshWorldSpaceTransform_RawID_Concurrent(MeshData.RootMotionMeshID);
-		for (int32 MeshID : MeshData.CustomizableMeshIDs)
-		{
-			SetMeshWorldSpaceTransform_RawID_Concurrent(MeshID, MeshTransform);
-		}
-	}
-}
-
-void ATurboSequence_Manager_Lf::MoveMeshWithRootMotion_RawID_Concurrent(int32 MeshID, float DeltaTime, bool ZeroZAxis,
+void ATurboSequence_Manager_Lf::MoveMeshWithRootMotion(FBaseSkeletalMeshHandle MeshID, float DeltaTime, bool ZeroZAxis,
                                                                         bool bIncludeScale)
 {
-	if (FTransform Atom; GetRootMotionTransform_RawID_Concurrent(Atom, MeshID, DeltaTime,
+	if (FTransform Atom; GetRootMotionTransform(Atom, MeshID, DeltaTime,
 	                                                             EBoneSpaces::ComponentSpace))
 	{
 		if (ZeroZAxis)
 		{
 			FVector AtomLocation = Atom.GetLocation();
-			AtomLocation.Z = GET0_NUMBER;
+			AtomLocation.Z = 0;
 			Atom.SetLocation(AtomLocation);
 		}
 
-		FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
+		FSkinnedMeshRuntime_Lf& Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
 		Atom *= Runtime.WorldSpaceTransform;
 		//Atom *= Runtime.DeltaOffsetTransform.Inverse();
 		if (bIncludeScale)
@@ -1723,82 +1098,43 @@ void ATurboSequence_Manager_Lf::MoveMeshWithRootMotion_RawID_Concurrent(int32 Me
 		}
 		Runtime.WorldSpaceTransform.SetRotation(Atom.GetRotation());
 		Runtime.WorldSpaceTransform.SetLocation(Atom.GetLocation());
-		if (FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
-			Reference.RenderData[Runtime.MaterialsHash].InstanceMap.Contains(MeshID))
-		{
-			FTurboSequence_Utility_Lf::UpdateInstanceTransform_Concurrent(
-				Reference, Runtime,
-				Runtime.WorldSpaceTransform, false);
-		}
+
+		UTurboSequence_RenderData* RenderData = Instance->GlobalLibrary.PerReferenceData[Runtime.RenderHandle];
+		
+		RenderData->UpdateInstanceTransform(
+			Runtime.MeshID, Runtime.WorldSpaceTransform);
+		
 	}
 }
 
-int32 ATurboSequence_Manager_Lf::GetNumOfAllMeshes_Concurrent()
+FTurboSequence_AnimMinimalData_Lf ATurboSequence_Manager_Lf::PlayAnimation(const FBaseSkeletalMeshHandle MeshID,
+                                                                                            UAnimSequence* Animation, const FTurboSequence_AnimPlaySettings_Lf& AnimSettings, const bool bForceLoop, const bool
+                                                                                            bForceFront)
 {
-	return GlobalLibrary.RuntimeSkinnedMeshes.Num();
-}
+	FScopeLock ScopeLock(&Instance->RenderThreadDataConsistency);
+	
+	FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID);
 
-FTurboSequence_AnimMinimalCollection_Lf ATurboSequence_Manager_Lf::PlayAnimation_Concurrent(
-	const FTurboSequence_MinimalMeshData_Lf& MeshData, UAnimSequence* Animation,
-	const FTurboSequence_AnimPlaySettings_Lf& AnimSettings)
-{
-	if (MeshData.IsMeshDataValid())
-	{
-		FTurboSequence_AnimMinimalCollection_Lf Data = FTurboSequence_AnimMinimalCollection_Lf(true);
-		Data.RootMotionMesh = PlayAnimation_RawID_Concurrent(MeshData.RootMotionMeshID, Animation, AnimSettings);
-		for (int32 MeshID : MeshData.CustomizableMeshIDs)
-		{
-			Data.CustomizableMeshes.Add(PlayAnimation_RawID_Concurrent(MeshID, Animation, AnimSettings));
-		}
-		return Data;
-	}
-	return FTurboSequence_AnimMinimalCollection_Lf(false);
-}
-
-FTurboSequence_AnimMinimalData_Lf ATurboSequence_Manager_Lf::PlayAnimation_RawID_Concurrent(int32 MeshID,
-	UAnimSequence* Animation, const FTurboSequence_AnimPlaySettings_Lf& AnimSettings)
-{
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
+	if (!Runtime)
 	{
 		return FTurboSequence_AnimMinimalData_Lf(false);
 	}
-
-	FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-	const FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
-
+	
 	bool bLoop = true;
 	if (IsValid(Animation)) // Cause of rest pose will pass here
 	{
-		bLoop = Animation->bLoop;
+		bLoop = Animation->bLoop || bForceLoop;
 	}
-	const TObjectPtr<UTurboSequence_ThreadContext_Lf> ThreadContext = Instance->GetThreadContext();
+	
 	FTurboSequence_AnimMinimalData_Lf MinimalAnimation = FTurboSequence_AnimMinimalData_Lf(true);
 	MinimalAnimation.BelongsToMeshID = MeshID;
 	MinimalAnimation.AnimationID = FTurboSequence_Utility_Lf::PlayAnimation(
-		Reference, GlobalLibrary, GlobalLibrary_RenderThread, Runtime,
-		ThreadContext, Animation, AnimSettings, bLoop);
+		Instance->GlobalLibrary, *Runtime, Animation, AnimSettings,
+		bLoop, INDEX_NONE, INDEX_NONE, INDEX_NONE, bForceFront);
 	return MinimalAnimation;
 }
 
-FTurboSequence_AnimMinimalBlendSpaceCollection_Lf ATurboSequence_Manager_Lf::PlayBlendSpace_Concurrent(
-	const FTurboSequence_MinimalMeshData_Lf& MeshData, UBlendSpace* BlendSpace,
-	const FTurboSequence_AnimPlaySettings_Lf AnimSettings)
-{
-	if (MeshData.IsMeshDataValid())
-	{
-		FTurboSequence_AnimMinimalBlendSpaceCollection_Lf Data =
-			FTurboSequence_AnimMinimalBlendSpaceCollection_Lf(true);
-		Data.RootMotionMesh = PlayBlendSpace_RawID_Concurrent(MeshData.RootMotionMeshID, BlendSpace, AnimSettings);
-		for (int32 MeshID : MeshData.CustomizableMeshIDs)
-		{
-			Data.CustomizableMeshes.Add(PlayBlendSpace_RawID_Concurrent(MeshID, BlendSpace, AnimSettings));
-		}
-		return Data;
-	}
-	return FTurboSequence_AnimMinimalBlendSpaceCollection_Lf(false);
-}
-
-FTurboSequence_AnimMinimalBlendSpace_Lf ATurboSequence_Manager_Lf::PlayBlendSpace_RawID_Concurrent(int32 MeshID,
+FTurboSequence_AnimMinimalBlendSpace_Lf ATurboSequence_Manager_Lf::PlayBlendSpace(FBaseSkeletalMeshHandle MeshID,
 	UBlendSpace* BlendSpace, const FTurboSequence_AnimPlaySettings_Lf& AnimSettings)
 {
 	if (!IsValid(BlendSpace))
@@ -1806,77 +1142,50 @@ FTurboSequence_AnimMinimalBlendSpace_Lf ATurboSequence_Manager_Lf::PlayBlendSpac
 		return FTurboSequence_AnimMinimalBlendSpace_Lf(false);
 	}
 
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
+	if (!Instance->GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
 	{
 		return FTurboSequence_AnimMinimalBlendSpace_Lf(false);
 	}
 
-	FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-	const FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
-
+	FSkinnedMeshRuntime_Lf& Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
+	
 	const TObjectPtr<UTurboSequence_ThreadContext_Lf> ThreadContext = Instance->GetThreadContext();
-	return FTurboSequence_Utility_Lf::PlayBlendSpace(Reference, GlobalLibrary, GlobalLibrary_RenderThread, Runtime,
-	                                                 BlendSpace, ThreadContext,
+	return FTurboSequence_Utility_Lf::PlayBlendSpace(Instance->GlobalLibrary, Runtime, BlendSpace, ThreadContext,
 	                                                 AnimSettings);
 }
 
-UAnimSequence* ATurboSequence_Manager_Lf::GetHighestPriorityPlayingAnimation_Concurrent(
-	const FTurboSequence_MinimalMeshData_Lf& MeshData)
+UAnimSequence* ATurboSequence_Manager_Lf::GetHighestPriorityPlayingAnimation_RawID_Concurrent(FBaseSkeletalMeshHandle MeshID)
 {
-	if (MeshData.IsMeshDataValid())
-	{
-		return GetHighestPriorityPlayingAnimation_RawID_Concurrent(MeshData.RootMotionMeshID);
-	}
-	return nullptr;
-}
-
-UAnimSequence* ATurboSequence_Manager_Lf::GetHighestPriorityPlayingAnimation_RawID_Concurrent(int32 MeshID)
-{
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
+	if (!Instance->GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
 	{
 		return nullptr;
 	}
 
-	const FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
+	const FSkinnedMeshRuntime_Lf& Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
 	return FTurboSequence_Utility_Lf::GetHighestPriorityAnimation(Runtime);
 }
 
-bool ATurboSequence_Manager_Lf::TweakAnimation_Concurrent(const FTurboSequence_AnimPlaySettings_Lf TweakSettings,
-                                                          const FTurboSequence_AnimMinimalData_Lf& AnimationData)
+void ATurboSequence_Manager_Lf::GetAnimNotifies(FBaseSkeletalMeshHandle MeshID, FTurboSequence_AnimNotifyQueue_Lf& NotifyQueue)
 {
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(AnimationData.BelongsToMeshID))
+	if (const FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
 	{
-		return false;
+		FTurboSequence_Utility_Lf::GetAnimNotifies(*Runtime, NotifyQueue);
 	}
-
-	FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[AnimationData.BelongsToMeshID];
-	const FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
-	const TObjectPtr<UTurboSequence_ThreadContext_Lf> ThreadContext = Instance->GetThreadContext();
-	return FTurboSequence_Utility_Lf::TweakAnimation(Runtime, ThreadContext,
-	                                                 GlobalLibrary, GlobalLibrary_RenderThread, TweakSettings,
-	                                                 AnimationData.AnimationID, Reference);
 }
 
-bool ATurboSequence_Manager_Lf::TweakAnimationCollection_Concurrent(
-	const FTurboSequence_AnimPlaySettings_Lf TweakSettings,
-	const FTurboSequence_AnimMinimalCollection_Lf& AnimationData)
+bool ATurboSequence_Manager_Lf::TweakAnimation(const FTurboSequence_AnimPlaySettings_Lf& TweakSettings,
+                                                          const FTurboSequence_AnimMinimalData_Lf& AnimationData)
 {
-	if (AnimationData.IsAnimCollectionValid())
+	if(FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(AnimationData.BelongsToMeshID))
 	{
-		bool bValid = TweakAnimation_Concurrent(TweakSettings, AnimationData.RootMotionMesh);
-		for (const FTurboSequence_AnimMinimalData_Lf& ID : AnimationData.CustomizableMeshes)
-		{
-			if (TweakAnimation_Concurrent(TweakSettings, ID))
-			{
-				bValid = true;
-			}
-		}
-		return bValid;
+		return FTurboSequence_Utility_Lf::TweakAnimation(*Runtime, Instance->GlobalLibrary,
+		                                                 TweakSettings, AnimationData.AnimationID);
 	}
+	
 	return false;
 }
 
-bool ATurboSequence_Manager_Lf::TweakBlendSpace_RawID_Concurrent(int32 MeshID,
+bool ATurboSequence_Manager_Lf::TweakBlendSpace(FBaseSkeletalMeshHandle MeshID,
                                                                  const FTurboSequence_AnimMinimalBlendSpace_Lf&
                                                                  BlendSpaceData, const FVector3f& WantedPosition)
 {
@@ -1885,509 +1194,190 @@ bool ATurboSequence_Manager_Lf::TweakBlendSpace_RawID_Concurrent(int32 MeshID,
 		return false;
 	}
 
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
+	if (!Instance->GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
 	{
 		return false;
 	}
 
-	FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
+	FSkinnedMeshRuntime_Lf& Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
 
-	return FTurboSequence_Utility_Lf::TweakBlendSpace(Runtime, Instance->GetThreadContext()->CriticalSection,
-	                                                  BlendSpaceData, WantedPosition);
+	return FTurboSequence_Utility_Lf::TweakBlendSpace(Runtime, BlendSpaceData,
+	                                                  WantedPosition);
 }
 
-bool ATurboSequence_Manager_Lf::TweakBlendSpace_Concurrent(
-	const FTurboSequence_AnimMinimalBlendSpaceCollection_Lf& BlendSpaceData, const FVector3f WantedPosition)
-{
-	if (BlendSpaceData.IsAnimCollectionValid())
-	{
-		bool bValid = TweakBlendSpace_RawID_Concurrent(BlendSpaceData.RootMotionMesh.BelongsToMeshID,
-		                                               BlendSpaceData.RootMotionMesh, WantedPosition);
-		for (const FTurboSequence_AnimMinimalBlendSpace_Lf& BlendSpace : BlendSpaceData.CustomizableMeshes)
-		{
-			if (TweakBlendSpace_RawID_Concurrent(BlendSpace.BelongsToMeshID, BlendSpace, WantedPosition))
-			{
-				bValid = true;
-			}
-		}
-		return bValid;
-	}
-	return false;
-}
-
-bool ATurboSequence_Manager_Lf::GetAnimationSettings_Concurrent(FTurboSequence_AnimPlaySettings_Lf& AnimationSettings,
+bool ATurboSequence_Manager_Lf::GetAnimationSettings(FTurboSequence_AnimPlaySettings_Lf& AnimationSettings,
                                                                 const FTurboSequence_AnimMinimalData_Lf& AnimationData)
 {
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(AnimationData.BelongsToMeshID))
+	if(const FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(AnimationData.BelongsToMeshID))
 	{
-		return false;
-	}
-
-	const FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[AnimationData.BelongsToMeshID];
-	if (!Runtime.AnimationIDs.Contains(AnimationData.AnimationID))
-	{
-		return false;
-	}
-
-	const FAnimationMetaData_Lf& AnimationFrame = Runtime.AnimationMetaData[Runtime.AnimationIDs[AnimationData.
-		AnimationID]];
-	AnimationSettings = AnimationFrame.Settings;
-	return true;
-}
-
-bool ATurboSequence_Manager_Lf::GetAnimationCollectionSettings_Concurrent(
-	TArray<FTurboSequence_AnimPlaySettings_Lf>& AnimationSettings,
-	const FTurboSequence_AnimMinimalCollection_Lf& AnimationData)
-{
-	FTurboSequence_AnimPlaySettings_Lf RootSettings;
-	if (GetAnimationSettings_Concurrent(RootSettings, AnimationData.RootMotionMesh))
-	{
-		AnimationSettings.Reset();
-		AnimationSettings.Add(RootSettings);
-		for (const FTurboSequence_AnimMinimalData_Lf& Data : AnimationData.CustomizableMeshes)
+		for (const FAnimationMetaData_Lf& AnimationMetaData : Runtime->AnimationMetaData)
 		{
-			FTurboSequence_AnimPlaySettings_Lf CustomizableSettings;
-			GetAnimationSettings_Concurrent(CustomizableSettings, Data);
-			AnimationSettings.Add(CustomizableSettings);
-		}
-		return true;
-	}
-	return false;
-}
-
-bool ATurboSequence_Manager_Lf::GetAnimationMetaData_Concurrent(FAnimationMetaData_Lf& AnimationMetaData,
-																const FTurboSequence_AnimMinimalData_Lf& AnimationData)
-{
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(AnimationData.BelongsToMeshID))
-	{
-		return false;
-	}
-
-	const FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[AnimationData.BelongsToMeshID];
-	if (!Runtime.AnimationIDs.Contains(AnimationData.AnimationID))
-	{
-		return false;
-	}
-
-	const FAnimationMetaData_Lf& AnimationFrame = Runtime.AnimationMetaData[Runtime.AnimationIDs[AnimationData.
-		AnimationID]];
-	AnimationMetaData = AnimationFrame;
-	return true;
-}
-
-bool ATurboSequence_Manager_Lf::GetAnimationCollectionMetaData_Concurrent(
-	TArray<FAnimationMetaData_Lf>& AnimationMetaDatas,
-	const FTurboSequence_AnimMinimalCollection_Lf& AnimationData)
-{
-	FAnimationMetaData_Lf RootMetaData;
-	if (GetAnimationMetaData_Concurrent(RootMetaData, AnimationData.RootMotionMesh))
-	{
-		AnimationMetaDatas.Reset();
-		AnimationMetaDatas.Add(RootMetaData);
-		for (const FTurboSequence_AnimMinimalData_Lf& Data : AnimationData.CustomizableMeshes)
-		{
-			FAnimationMetaData_Lf CustomizableMetaData;
-			GetAnimationMetaData_Concurrent(CustomizableMetaData, Data);
-			AnimationMetaDatas.Add(CustomizableMetaData);
-		}
-		return true;
-	}
-	return false;
-}
-
-bool ATurboSequence_Manager_Lf::GetIKTransform_Concurrent(FTransform& OutIKTransform,
-                                                          const FTurboSequence_MinimalMeshData_Lf& MeshData,
-                                                          const FName BoneName, const float AnimationDeltaTime,
-                                                          const EBoneSpaces::Type Space)
-{
-	if (MeshData.IsMeshDataValid())
-	{
-		if (GetIKTransform_RawID_Concurrent(OutIKTransform, MeshData.RootMotionMeshID, BoneName, AnimationDeltaTime,
-		                                    Space))
-		{
-			return true;
-		}
-
-		for (int32 MeshID : MeshData.CustomizableMeshIDs)
-		{
-			if (GetIKTransform_RawID_Concurrent(OutIKTransform, MeshID, BoneName, AnimationDeltaTime, Space))
+			if(AnimationMetaData.AnimationID == AnimationData.AnimationID)
 			{
+				AnimationSettings = AnimationMetaData.Settings;
 				return true;
 			}
 		}
 	}
+
 	return false;
 }
 
-bool ATurboSequence_Manager_Lf::GetIKTransform_RawID_Concurrent(FTransform& OutIKTransform, int32 MeshID,
-                                                                const FName& BoneName, float AnimationDeltaTime,
-                                                                const EBoneSpaces::Type Space)
+bool ATurboSequence_Manager_Lf::GetAnimationMetaData(FAnimationMetaData_Lf& AnimationMetaData,
+                                                                const FTurboSequence_AnimMinimalData_Lf& AnimationData)
 {
+	if(const FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(AnimationData.BelongsToMeshID))
+	{
+		for (const FAnimationMetaData_Lf& RuntimeAnimationMetaData : Runtime->AnimationMetaData)
+		{
+			if(RuntimeAnimationMetaData.AnimationID == AnimationData.AnimationID)
+			{
+				AnimationMetaData = RuntimeAnimationMetaData;
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+void ATurboSequence_Manager_Lf::SetAnimationTick(FBaseSkeletalMeshHandle MeshID, const bool bInTickEnabled)
+{
+	if(FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
+	{
+		Runtime->bAnimTickEnabled = bInTickEnabled;
+	}
+}
+
+bool ATurboSequence_Manager_Lf::GetBoneTransform(FTransform& OutIKTransform, const FBaseSkeletalMeshHandle MeshID,
+                                                 const FName& BoneName,
+                                                 const EBoneSpaces::Type Space)
+{
+	if(const FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
+	{
+		const FReferenceSkeleton& ReferenceSkeleton =
+			FTurboSequence_Utility_Lf::GetReferenceSkeleton(Runtime->DataAsset);
+
+		const int32 BoneIndexFromName = FTurboSequence_Utility_Lf::GetSkeletonBoneIndex(ReferenceSkeleton, BoneName);
+		
+		if (FTurboSequence_Utility_Lf::GetSkeletonIsValidIndex(ReferenceSkeleton, BoneIndexFromName))
+		{
+			FTurboSequence_Utility_Lf::GetBoneTransform(OutIKTransform, BoneIndexFromName, *Runtime,
+														Instance->GlobalLibrary, Space);
+
+			return true;
+		}
+
+	}
+
 	OutIKTransform = FTransform::Identity;
 
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
-	{
-		return false;
-	}
-	FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-	const FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
-
-	const FReferenceSkeleton& ReferenceSkeleton =
-		FTurboSequence_Utility_Lf::GetReferenceSkeleton(Runtime.DataAsset);
-	if (int32 BoneIndexFromName = FTurboSequence_Utility_Lf::GetSkeletonBoneIndex(ReferenceSkeleton, BoneName);
-		FTurboSequence_Utility_Lf::GetSkeletonIsValidIndex(ReferenceSkeleton, BoneIndexFromName))
-	{
-		int64 CurrentFrameCount = UKismetSystemLibrary::GetFrameCount();
-		const TObjectPtr<UTurboSequence_ThreadContext_Lf> ThreadContext = Instance->GetThreadContext();
-
-		FTurboSequence_Utility_Lf::GetIKTransform(OutIKTransform, BoneIndexFromName, Runtime, Reference,
-		                                          GlobalLibrary, GlobalLibrary_RenderThread, Space,
-		                                          AnimationDeltaTime, CurrentFrameCount,
-		                                          ThreadContext);
-
-		return true;
-	}
-
 	return false;
 }
 
-bool ATurboSequence_Manager_Lf::SetIKTransform_Concurrent(const FTurboSequence_MinimalMeshData_Lf& MeshData,
-                                                          const FName BoneName, const FTransform IKTransform,
-                                                          const EBoneSpaces::Type Space)
-{
-	if (MeshData.IsMeshDataValid())
-	{
-		if (SetIKTransform_RawID_Concurrent(MeshData.RootMotionMeshID, BoneName, IKTransform, Space))
-		{
-			return true;
-		}
-
-		for (int32 MeshID : MeshData.CustomizableMeshIDs)
-		{
-			if (SetIKTransform_RawID_Concurrent(MeshID, BoneName, IKTransform, Space))
-			{
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
-bool ATurboSequence_Manager_Lf::SetIKTransform_RawID_Concurrent(int32 MeshID, const FName& BoneName,
-                                                                const FTransform& IKTransform,
+bool ATurboSequence_Manager_Lf::UpdateOverrideBoneTransform(FBaseSkeletalMeshHandle MeshID, const FName& BoneName,
+                                                                const FTransform& Transform,
                                                                 const EBoneSpaces::Type Space)
 {
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
+	FScopeLock ScopeLock(&Instance->RenderThreadDataConsistency);
+	
+	if(FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
 	{
-		return false;
-	}
-	FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-	if (!IsValid(Runtime.DataAsset))
-	{
-		return false;
-	}
-	const FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
+		if (!IsValid(Runtime->DataAsset))
+		{
+			return false;
+		}
 
-	const FReferenceSkeleton& ReferenceSkeleton =
-		FTurboSequence_Utility_Lf::GetReferenceSkeleton(Runtime.DataAsset);
-	if (int32 BoneIndexFromName = FTurboSequence_Utility_Lf::GetSkeletonBoneIndex(ReferenceSkeleton, BoneName);
-		FTurboSequence_Utility_Lf::GetSkeletonIsValidIndex(ReferenceSkeleton, BoneIndexFromName))
-	{
-		return FTurboSequence_Utility_Lf::SetIKTransform(IKTransform, BoneIndexFromName, Runtime, Reference,
-		                                                 Instance->GetThreadContext()->CriticalSection, Space);
-	}
+		const FReferenceSkeleton& ReferenceSkeleton = FTurboSequence_Utility_Lf::GetReferenceSkeleton(Runtime->DataAsset);
 
+		const int32 BoneIndexFromName = FTurboSequence_Utility_Lf::GetSkeletonBoneIndex(ReferenceSkeleton, BoneName);
+		
+		if (FTurboSequence_Utility_Lf::GetSkeletonIsValidIndex(ReferenceSkeleton, BoneIndexFromName))
+		{
+			return FTurboSequence_Utility_Lf::OverrideBoneTransform(Transform, BoneIndexFromName, *Runtime,
+			                                                        Space);
+		}
+	}
+	
 	return false;
 }
 
-bool ATurboSequence_Manager_Lf::GetSocketTransform_Concurrent(FTransform& OutSocketTransform,
-                                                              const FTurboSequence_MinimalMeshData_Lf& MeshData,
-                                                              const FName SocketName, const float AnimationDeltaTime,
-                                                              const EBoneSpaces::Type Space)
+bool ATurboSequence_Manager_Lf::RemoveOverrideBoneTransform(FBaseSkeletalMeshHandle MeshID, const FName& BoneName)
 {
-	if (MeshData.IsMeshDataValid())
+	FScopeLock ScopeLock(&Instance->RenderThreadDataConsistency);
+	
+	if(FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
 	{
-		if (GetSocketTransform_RawID_Concurrent(OutSocketTransform, MeshData.RootMotionMeshID, SocketName,
-		                                        AnimationDeltaTime, Space))
+		if (!IsValid(Runtime->DataAsset))
 		{
-			return true;
+			return false;
 		}
 
-		for (int32 MeshID : MeshData.CustomizableMeshIDs)
+		const FReferenceSkeleton& ReferenceSkeleton = FTurboSequence_Utility_Lf::GetReferenceSkeleton(Runtime->DataAsset);
+
+		const int32 BoneIndexFromName = FTurboSequence_Utility_Lf::GetSkeletonBoneIndex(ReferenceSkeleton, BoneName);
+		
+		if (FTurboSequence_Utility_Lf::GetSkeletonIsValidIndex(ReferenceSkeleton, BoneIndexFromName))
 		{
-			if (GetSocketTransform_RawID_Concurrent(OutSocketTransform, MeshID, SocketName, AnimationDeltaTime,
-			                                        Space))
-			{
-				return true;
-			}
+			return FTurboSequence_Utility_Lf::RemoveOverrideBoneTransform(BoneIndexFromName, *Runtime);
 		}
 	}
+
 	return false;
+	
 }
 
-bool ATurboSequence_Manager_Lf::GetSocketTransform_RawID_Concurrent(FTransform& OutSocketTransform, int32 MeshID,
-                                                                    const FName& SocketName, float AnimationDeltaTime,
+bool ATurboSequence_Manager_Lf::GetSocketTransform(FTransform& OutSocketTransform, FBaseSkeletalMeshHandle MeshID,
+                                                                    const FName& SocketName,
                                                                     const EBoneSpaces::Type Space)
 {
+	
+	if(FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
+	{	
+		if (IsValid(Runtime->DataAsset) && IsValid(Runtime->DataAsset->ReferenceMeshNative))
+		{
+			return FTurboSequence_Utility_Lf::GetSocketTransform(OutSocketTransform, SocketName, *Runtime,
+														  Instance->GlobalLibrary, Space);
+		}
+
+	}
+
 	OutSocketTransform = FTransform::Identity;
 
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
-	{
-		return false;
-	}
-	FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-	if (!IsValid(Runtime.DataAsset))
-	{
-		return false;
-	}
-	const FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
-
-	if (IsValid(Runtime.DataAsset) && IsValid(Runtime.DataAsset->ReferenceMeshNative) && Runtime.DataAsset->
-		ReferenceMeshNative->FindSocket(SocketName))
-	{
-		int64 CurrentFrameCount = UKismetSystemLibrary::GetFrameCount();
-		const TObjectPtr<UTurboSequence_ThreadContext_Lf> ThreadContext = Instance->GetThreadContext();
-
-		FTurboSequence_Utility_Lf::GetSocketTransform(OutSocketTransform, SocketName, Runtime, Reference,
-		                                              GlobalLibrary, GlobalLibrary_RenderThread, Space,
-		                                              AnimationDeltaTime, CurrentFrameCount,
-		                                              ThreadContext);
-
-		return true;
-	}
-
 	return false;
 }
 
-bool ATurboSequence_Manager_Lf::GetBoneTransforms_RawID_Concurrent(TArray<FTransform> &OutBoneTransforms, int32 MeshID,
-																	const TArray<FName> &BoneNames, float AnimationDeltaTime,
-																	const EBoneSpaces::Type Space)
+bool ATurboSequence_Manager_Lf::GetBoneTransforms_RawID_Concurrent(TArray<FTransform>& OutBoneTransforms, const FBaseSkeletalMeshHandle MeshID,
+                                                                   const TArray<FName>& BoneNames,
+                                                                   const EBoneSpaces::Type Space)
 {
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
+	if(FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
 	{
-		return false;
-	}
-	FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-	if (!IsValid(Runtime.DataAsset))
-	{
-		return false;
-	}
-	const FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
-
-	if (IsValid(Runtime.DataAsset) && IsValid(Runtime.DataAsset->ReferenceMeshNative))
-	{
-		int64 CurrentFrameCount = UKismetSystemLibrary::GetFrameCount();
-		const TObjectPtr<UTurboSequence_ThreadContext_Lf> ThreadContext = Instance->GetThreadContext();
-
-		FTurboSequence_Utility_Lf::GetBoneTransforms(OutBoneTransforms, BoneNames, Runtime, Reference,
-													  GlobalLibrary, GlobalLibrary_RenderThread, Space,
-													  AnimationDeltaTime, CurrentFrameCount,
-													  ThreadContext);
-
-		return true;
-	}
-
-	return false;
-}
-
-
-
-bool ATurboSequence_Manager_Lf::GetIsMeshVisibleInCameraFrustum_Concurrent(
-	const FTurboSequence_MinimalMeshData_Lf& MeshData)
-{
-	if (MeshData.IsMeshDataValid())
-	{
-		if (GetIsMeshVisibleInCameraFrustum_RawID_Concurrent(MeshData.RootMotionMeshID))
+		if (IsValid(Runtime->DataAsset) && IsValid(Runtime->DataAsset->ReferenceMeshNative))
 		{
+			FTurboSequence_Utility_Lf::GetBoneTransforms(OutBoneTransforms, BoneNames, *Runtime,
+													 Instance->GlobalLibrary, Space);
+
 			return true;
 		}
-		for (int32 MeshID : MeshData.CustomizableMeshIDs)
-		{
-			if (GetIsMeshVisibleInCameraFrustum_RawID_Concurrent(MeshID))
-			{
-				return true;
-			}
-		}
 	}
+	
 	return false;
 }
 
-bool ATurboSequence_Manager_Lf::GetReferencePoseTransform_Concurrent(FTransform& OutRefPoseTransform,
-                                                                     const FTurboSequence_MinimalMeshData_Lf& MeshData,
-                                                                     const FName BoneName,
-                                                                     const ETurboSequence_TransformSpace_Lf
-                                                                     MeshTransformSpace)
-{
-	if (MeshData.IsMeshDataValid())
-	{
-		if (GetReferencePoseTransform_RawID_Concurrent(OutRefPoseTransform, MeshData.RootMotionMeshID, BoneName,
-		                                               MeshTransformSpace))
-		{
-			return true;
-		}
-		for (int32 MeshID : MeshData.CustomizableMeshIDs)
-		{
-			if (GetReferencePoseTransform_RawID_Concurrent(OutRefPoseTransform, MeshID, BoneName,
-			                                               MeshTransformSpace))
-			{
-				return true;
-			}
-		}
-	}
-	return false;
-}
 
-bool ATurboSequence_Manager_Lf::GetReferencePoseTransform_RawID_Concurrent(FTransform& OutRefPoseTransform,
-                                                                           int32 MeshID, const FName& BoneName,
-                                                                           const ETurboSequence_TransformSpace_Lf&
-                                                                           MeshTransformSpace)
-{
-	if (GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
-	{
-		const FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-		const FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
-		const FReferenceSkeleton& ReferenceSkeleton = FTurboSequence_Utility_Lf::GetReferenceSkeleton(
-			Reference.DataAsset);
-		if (int32 BoneIndexFromName = FTurboSequence_Utility_Lf::GetSkeletonBoneIndex(ReferenceSkeleton, BoneName);
-			FTurboSequence_Utility_Lf::GetSkeletonIsValidIndex(ReferenceSkeleton, BoneIndexFromName))
-		{
-			switch (MeshTransformSpace)
-			{
-			case ETurboSequence_TransformSpace_Lf::BoneSpace:
-
-				OutRefPoseTransform = ReferenceSkeleton.GetRefBonePose()[BoneIndexFromName];
-				return true;
-
-			case ETurboSequence_TransformSpace_Lf::ComponentSpace:
-
-				OutRefPoseTransform = Reference.ComponentSpaceRestPose[BoneIndexFromName];
-				return true;
-
-			case ETurboSequence_TransformSpace_Lf::WorldSpace:
-
-				OutRefPoseTransform = Reference.ComponentSpaceRestPose[BoneIndexFromName] * Runtime.WorldSpaceTransform;
-				return true;
-
-			default:
-				return false;
-			}
-		}
-	}
-
-	return false;
-}
-
-int32 ATurboSequence_Manager_Lf::GetNumOfGPUBones_Concurrent(const UTurboSequence_MeshAsset_Lf* FromAsset,
-                                                             const int32 LodIndex)
-{
-	if (GlobalLibrary.PerReferenceData.Contains(FromAsset))
-	{
-		return GlobalLibrary.PerReferenceData[FromAsset].LevelOfDetails[LodIndex].CPUBoneToGPUBoneIndicesMap.Num();
-	}
-	return GET0_NUMBER;
-}
-
-UTurboSequence_MeshAsset_Lf* ATurboSequence_Manager_Lf::GetMeshAsset_RawID_Concurrent(int32 MeshID)
-{
-	if (GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
-	{
-		return GlobalLibrary.RuntimeSkinnedMeshes[MeshID].DataAsset;
-	}
-	return nullptr;
-}
-
-bool ATurboSequence_Manager_Lf::CustomizeMesh_RawID_GameThread(int32 MeshID, UTurboSequence_MeshAsset_Lf* TargetMesh,
-                                                               const TArray<UMaterialInterface*>& TargetMaterials)
-{
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
-	{
-		return false;
-	}
-
-	FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-	if (Runtime.DataAsset == TargetMesh && !TargetMaterials.Num())
-	{
-		return false;
-	}
-
-
-	TArray<TObjectPtr<UMaterialInterface>> Materials;
-	Materials.Append(TargetMaterials);
-
-	uint32 MaterialHash = FTurboSequence_Helper_Lf::GetArrayHash(Materials);
-	if (Runtime.DataAsset == TargetMesh && Runtime.MaterialsHash == MaterialHash) // It's the same
-	{
-		return false;
-	}
-
-	if (bool bMaterialChangeValid = Materials.Num() && Runtime.MaterialsHash != MaterialHash; !bMaterialChangeValid)
-	{
-		if (!TargetMesh->IsMeshAssetValid())
-		{
-			return false;
-		}
-	}
-
-	if (GlobalLibrary.PerReferenceData.Contains(TargetMesh))
-	{
-		const FSkinnedMeshReference_Lf& PostReference = GlobalLibrary.PerReferenceData[TargetMesh];
-		if (!IsValid(PostReference.FirstValidMeshLevelOfDetail))
-		{
-			return false;
-		}
-	}
-
-	const TObjectPtr<UTurboSequence_ThreadContext_Lf> ThreadContext = Instance->GetThreadContext();
-	FTurboSequence_Utility_Lf::CustomizeMesh(Runtime, TargetMesh, Materials, Instance->NiagaraComponents,
-	                                         GlobalLibrary, GlobalLibrary_RenderThread,
-	                                         Instance->GetRootComponent(),
-	                                         ThreadContext);
-
-	return true;
-}
-
-bool ATurboSequence_Manager_Lf::CustomizeMesh_GameThread(FTurboSequence_MinimalMeshData_Lf& MeshData,
-                                                         const FTurboSequence_MeshSpawnData_Lf TargetMesh)
-{
-	if (!MeshData.IsMeshDataValid())
-	{
-		return false;
-	}
-
-	if (MeshData.CustomizableMeshIDs.Num() != TargetMesh.CustomizableMeshes.Num())
-	{
-		return false; // TODO: Add Management from Add and Remove instances here as well
-	}
-
-
-	bool bFinished = CustomizeMesh_RawID_GameThread(MeshData.RootMotionMeshID, TargetMesh.RootMotionMesh.Mesh,
-	                                                TargetMesh.RootMotionMesh.OverrideMaterials);
-
-	int16 NumCustomizable = TargetMesh.CustomizableMeshes.Num();
-	for (int16 i = GET0_NUMBER; i < NumCustomizable; ++i)
-	{
-		if (CustomizeMesh_RawID_GameThread(MeshData.CustomizableMeshIDs[i], TargetMesh.CustomizableMeshes[i].Mesh,
-		                                   TargetMesh.CustomizableMeshes[i].OverrideMaterials))
-		{
-			bFinished = true;
-		}
-	}
-
-	return bFinished;
-}
-
-FTurboSequence_PoseCurveData_Lf ATurboSequence_Manager_Lf::GetAnimationCurveValue_RawID_Concurrent(int32 MeshID,
+FTurboSequence_PoseCurveData_Lf ATurboSequence_Manager_Lf::GetAnimationCurveValue(FBaseSkeletalMeshHandle MeshID,
 	const FName& CurveName, UAnimSequence* Animation)
 {
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
+	if (!Instance->GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
 	{
 		return FTurboSequence_PoseCurveData_Lf();
 	}
 
-	const FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-	//const FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
+	const FSkinnedMeshRuntime_Lf& Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
+	//const FSkinnedMeshReference_Lf& Reference = Instance->GlobalLibrary.PerReferenceData[Runtime.DataAsset];
 
-	if (!GlobalLibrary.AnimationLibraryData.Contains(
+	if (!Instance->GlobalLibrary.AnimationLibraryData.Contains(
 		FTurboSequence_Utility_Lf::GetAnimationLibraryKey(Runtime.DataAsset->GetSkeleton(), Runtime.DataAsset,
 		                                                  Animation)))
 	{
@@ -2409,71 +1399,58 @@ FTurboSequence_PoseCurveData_Lf ATurboSequence_Manager_Lf::GetAnimationCurveValu
 		return FTurboSequence_PoseCurveData_Lf();
 	}
 
-	return FTurboSequence_Utility_Lf::GetAnimationCurveByAnimation(Runtime, AnimationMetaData, GlobalLibrary,
-	                                                               CurveName);
+	return FTurboSequence_Utility_Lf::GetAnimationCurveByAnimation(AnimationMetaData, Instance->GlobalLibrary, CurveName);
 }
 
-FTurboSequence_PoseCurveData_Lf ATurboSequence_Manager_Lf::GetAnimationCurveValue_Concurrent(
-	const FTurboSequence_MinimalMeshData_Lf& MeshData, const FName CurveName, UAnimSequence* Animation)
+bool ATurboSequence_Manager_Lf::SetInstanceCustomData(
+	const FBaseSkeletalMeshHandle MeshID, const int Index,
+	const float Value, const bool bSetAttachments) 
 {
-	if (!MeshData.IsMeshDataValid())
+	if(const FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
 	{
-		return FTurboSequence_PoseCurveData_Lf();
+		if(bSetAttachments)
+		{
+			for (const FSkinnedMeshAttachmentRuntime& Attachment : Runtime->Attachments)
+			{
+				UTurboSequence_RenderData* TurboSequenceRenderData = Instance->GlobalLibrary.PerReferenceData[Attachment.RenderHandle];
+				
+				TurboSequenceRenderData->SetCustomDataForInstance(Attachment.AttachmentHandle, Index, Value);
+			}
+		}
+		
+		UTurboSequence_RenderData* RenderData = Instance->GlobalLibrary.PerReferenceData[Runtime->RenderHandle];
+		
+		return RenderData->SetCustomDataForInstance(MeshID, Index, Value);
 	}
-
-	return GetAnimationCurveValue_RawID_Concurrent(MeshData.RootMotionMeshID, CurveName, Animation);
+	
+	return false;
 }
 
-UTurboSequence_FootprintAsset_Lf* ATurboSequence_Manager_Lf::GetFootprintAsset_RawID_Concurrent(int32 MeshID)
+bool ATurboSequence_Manager_Lf::SetInstanceCustomDataArray(
+	const FBaseSkeletalMeshHandle MeshID, const int StartIndex,
+	const TArray<float>& Values, const bool bSetAttachments) 
 {
-	if (GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
+	if(const FSkinnedMeshRuntime_Lf* Runtime = Instance->GlobalLibrary.RuntimeSkinnedMeshes.Find(MeshID))
 	{
-		return GlobalLibrary.RuntimeSkinnedMeshes[MeshID].FootprintAsset;
+		if(bSetAttachments)
+		{
+			for (const FSkinnedMeshAttachmentRuntime& Attachment : Runtime->Attachments)
+			{
+				UTurboSequence_RenderData* TurboSequenceRenderData = Instance->GlobalLibrary.PerReferenceData[Attachment.RenderHandle];
+				
+				TurboSequenceRenderData->SetCustomDataArrayForInstance(Attachment.AttachmentHandle, StartIndex, Values);
+			}
+		}
+		
+		UTurboSequence_RenderData* RenderData = Instance->GlobalLibrary.PerReferenceData[Runtime->RenderHandle];
+		
+		return RenderData->SetCustomDataArrayForInstance(MeshID, StartIndex, Values);
 	}
-	return nullptr;
+	
+	return false;
 }
 
-UTurboSequence_FootprintAsset_Lf* ATurboSequence_Manager_Lf::GetFootprintAsset_Concurrent(
-	const FTurboSequence_MinimalMeshData_Lf& MeshData)
-{
-	return GetFootprintAsset_RawID_Concurrent(MeshData.RootMotionMeshID);
-}
-
-bool ATurboSequence_Manager_Lf::SetCustomDataToInstance_RawID_Concurrent(int32 MeshID, uint8 CustomDataFractionIndex,
-                                                                         float CustomDataValue)
-{
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(MeshID))
-	{
-		return false;
-	}
-
-	const FSkinnedMeshRuntime_Lf& Runtime = GlobalLibrary.RuntimeSkinnedMeshes[MeshID];
-	FSkinnedMeshReference_Lf& Reference = GlobalLibrary.PerReferenceData[Runtime.DataAsset];
-
-	return FTurboSequence_Utility_Lf::SetCustomDataForInstance_User(Reference, Runtime, CustomDataFractionIndex,
-	                                                                CustomDataValue);
-}
-
-bool ATurboSequence_Manager_Lf::SetCustomDataToInstance_Concurrent(const FTurboSequence_MinimalMeshData_Lf& MeshData,
-                                                                   const uint8 CustomDataFractionIndex,
-                                                                   const float CustomDataValue)
-{
-	if (!MeshData.IsMeshDataValid())
-	{
-		return false;
-	}
-
-	bool bSuccess = SetCustomDataToInstance_RawID_Concurrent(MeshData.RootMotionMeshID, CustomDataFractionIndex,
-	                                                         CustomDataValue);
-	for (int32 MeshID : MeshData.CustomizableMeshIDs)
-	{
-		SetCustomDataToInstance_RawID_Concurrent(MeshID, CustomDataFractionIndex, CustomDataValue);
-	}
-
-	return bSuccess;
-}
-
-bool ATurboSequence_Manager_Lf::SetTransitionTsMeshToUEMesh(const int32 TsMeshID, USkinnedMeshComponent* UEMesh,
+bool ATurboSequence_Manager_Lf::SetTransitionTsMeshToUEMesh(const FBaseSkeletalMeshHandle TsMeshID, USkinnedMeshComponent* UEMesh,
                                                             const float UEMeshPercentage,
                                                             const float AnimationDeltaTime)
 {
@@ -2481,7 +1458,7 @@ bool ATurboSequence_Manager_Lf::SetTransitionTsMeshToUEMesh(const int32 TsMeshID
 	{
 		return false;
 	}
-	if (!GlobalLibrary.RuntimeSkinnedMeshes.Contains(TsMeshID))
+	if (!Instance->GlobalLibrary.RuntimeSkinnedMeshes.Contains(TsMeshID))
 	{
 		return false;
 	}
@@ -2492,13 +1469,13 @@ bool ATurboSequence_Manager_Lf::SetTransitionTsMeshToUEMesh(const int32 TsMeshID
 			UEMesh->GetSkinnedAsset());
 
 	const int32 NumBones = ReferenceSkeleton.GetNum();
-	for (int32 BoneIdx = GET0_NUMBER; BoneIdx < NumBones; ++BoneIdx)
+	for (int32 BoneIdx = 0; BoneIdx < NumBones; ++BoneIdx)
 	{
 		const FName& BoneName = UEMesh->GetBoneName(BoneIdx);
 
 		FTransform TurboSequenceIKTransform;
-		GetIKTransform_RawID_Concurrent(
-			TurboSequenceIKTransform, TsMeshID, BoneName, AnimationDeltaTime);
+		GetBoneTransform(
+			TurboSequenceIKTransform, TsMeshID, BoneName);
 
 		const FTransform& SkeletalMeshIKTransform = UEMesh->GetBoneTransform(BoneIdx);
 
@@ -2512,7 +1489,7 @@ bool ATurboSequence_Manager_Lf::SetTransitionTsMeshToUEMesh(const int32 TsMeshID
 			TurboSequenceIKTransform.GetRotation(), SkeletalMeshIKTransform.GetRotation(),
 			UEMeshPercentage));
 
-		SetIKTransform_RawID_Concurrent(
+		UpdateOverrideBoneTransform(
 			TsMeshID, BoneName,
 			TurboSequenceIKTransform);
 	}

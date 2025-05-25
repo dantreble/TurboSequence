@@ -2,12 +2,20 @@
 
 #include "TurboSequence_Editor_Lf.h"
 
-#include "TurboSequence_ControlWidget_Lf.h"
+#include "BoneWeights.h"
+#include "MeshUtilities.h"
+#include "PackageTools.h"
+#include "TurboSequence_MeshAsset_Lf.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Engine/SkeletalMeshSocket.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Rendering/RenderCommandPipes.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 #include "UObject/ConstructorHelpers.h"
 
 #define LOCTEXT_NAMESPACE "FTurboSequence_Editor_LfModule"
+
+class IMeshUtilities;
 
 void FTurboSequence_Editor_LfModule::StartupModule()
 {
@@ -19,9 +27,6 @@ void FTurboSequence_Editor_LfModule::StartupModule()
 
 	TurboSequence_MeshAssetTypeActions = MakeShared<FTurboSequence_MeshAssetAction_Lf>();
 	AssetTools.RegisterAssetTypeActions(TurboSequence_MeshAssetTypeActions.ToSharedRef());
-
-	TurboSequence_AnimLibraryTypeActions = MakeShared<FTurboSequence_AnimLibraryAction_Lf>();
-	AssetTools.RegisterAssetTypeActions(TurboSequence_AnimLibraryTypeActions.ToSharedRef());
 	
 	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 	AssetRegistry.OnFilesLoaded().AddRaw(this, &FTurboSequence_Editor_LfModule::OnFilesLoaded);
@@ -35,262 +40,12 @@ void FTurboSequence_Editor_LfModule::ShutdownModule()
 	}
 
 	FAssetToolsModule::GetModule().Get().UnregisterAssetTypeActions(TurboSequence_MeshAssetTypeActions.ToSharedRef());
-
-	FAssetToolsModule::GetModule().Get().UnregisterAssetTypeActions(TurboSequence_AnimLibraryTypeActions.ToSharedRef());
+	
 
 	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 	AssetRegistry.OnFilesLoaded().RemoveAll(this);
 }
 
-
-
-
-void FTurboSequence_Editor_LfModule::RepairMeshAssetAsync()
-{
-	RepairMaxIterationCounter = GET0_NUMBER;
-	if (!TurboSequence_MeshAssetData_AsyncComputeSwapBack.Num())
-	{
-		// We reach the end
-		UE_LOG(LogTurboSequence_Lf, Display, TEXT("Finished Turbo Sequence Mesh Asset Init...."));
-		UE_LOG(LogTurboSequence_Lf, Display, TEXT("Returning with ID=0"))
-		return;
-	}
-	const TObjectPtr<UTurboSequence_MeshAsset_Lf> TurboSequence_Asset = Cast<UTurboSequence_MeshAsset_Lf>(
-		TurboSequence_MeshAssetData_AsyncComputeSwapBack[GET0_NUMBER].GetAsset());
-
-	bool bAssetEdited = false;
-	bool bSkinWeightEdited = false;
-
-	if (IsValid(GlobalData) && !IsValid(TurboSequence_Asset->GlobalData))
-	{
-		TurboSequence_Asset->GlobalData = GlobalData;
-		bAssetEdited = true;
-	}
-
-	//bool bAssetEdited = false;
-	if (IsValid(TurboSequence_Asset->ReferenceMeshEdited) && TurboSequence_Asset->bNeedGeneratedNextEngineStart)
-	{
-		if (TurboSequence_Asset->InstancedMeshes.Num())
-		{
-			bool bHasAnyMesh = false;
-			int32 NumLOD = TurboSequence_Asset->InstancedMeshes.Num();
-			for (int32 MeshIdx = GET0_NUMBER; MeshIdx < NumLOD; ++MeshIdx)
-			{
-				if (IsValid(TurboSequence_Asset->InstancedMeshes[MeshIdx].StaticMesh))
-				{
-					bHasAnyMesh = true;
-					break;
-				}
-			}
-			if (bHasAnyMesh)
-			{
-				//bool bAssetEdited = false;
-
-				UE_LOG(LogTurboSequence_Lf, Display, TEXT("Detected Engine or Platform change ...."));
-				UE_LOG(LogTurboSequence_Lf, Display, TEXT("Prepering Meshes ...."));
-
-				TurboSequence_Asset->MeshDataOrderView.Empty();
-
-				FString WantedMeshName = FString(FString::Format(
-					TEXT("{0}_TurboSequence_Instance"), {*TurboSequence_Asset->ReferenceMeshNative->GetName()}));
-
-				//int32 NumLOD = CPAsset->InstancedMeshes.Num();
-				for (int32 MeshIdx = GET0_NUMBER; MeshIdx < NumLOD; ++MeshIdx)
-				{
-					if (IsValid(TurboSequence_Asset->InstancedMeshes[MeshIdx].StaticMesh))
-					{
-						const UPackage* Package = TurboSequence_Asset->InstancedMeshes[MeshIdx].StaticMesh->
-							GetOutermost();
-						const FString PackagePath = FPackageName::LongPackageNameToFilename(
-							Package->GetName(), FPackageName::GetAssetPackageExtension());
-						UPackageTools::LoadPackage(*PackagePath);
-
-						TArray<int32> StaticMeshOrderIndices;
-
-						if (TObjectPtr<UStaticMesh> StaticMesh =
-							UTurboSequence_ControlWidget_Lf::GenerateStaticMeshFromSkeletalMesh(
-								TurboSequence_Asset->ReferenceMeshEdited, MeshIdx, PackagePath,
-								FString(FString::Format(
-									TEXT("{0}_Lod_{1}"), {*WantedMeshName, *FString::FormatAsNumber(MeshIdx)})),
-								StaticMeshOrderIndices))
-						{
-							//FMeshItem_Lf Item = FMeshItem_Lf();
-							if (MeshIdx > GET9_NUMBER)
-							{
-								TurboSequence_Asset->InstancedMeshes[MeshIdx].bIsAnimated = false;
-							}
-							TurboSequence_Asset->InstancedMeshes[MeshIdx].StaticMesh = StaticMesh;
-							//CreateVertexMaps(Main_Asset_To_Edit, i, Item.VertexData, Item.BoneIndices);
-							//LevelOfDetails.Add(Item);
-							//bAssetEdited = true;
-
-							FMeshDataOrderView_Lf Order = FMeshDataOrderView_Lf();
-							Order.StaticMeshIndices = StaticMeshOrderIndices;
-
-							TurboSequence_Asset->MeshDataOrderView.Add(Order);
-
-
-							bSkinWeightEdited = true;
-						}
-					}
-				}
-
-				if (bSkinWeightEdited)
-				{
-					const UPackage* Package = TurboSequence_Asset->ReferenceMeshEdited->GetOutermost();
-					const FString PackagePath = FPackageName::LongPackageNameToFilename(
-						Package->GetName(), FPackageName::GetAssetPackageExtension());
-					UPackageTools::LoadPackage(*PackagePath);
-
-					//TObjectPtr<UWorld> World = GEditor->GetEditorWorldContext().World();
-
-					auto RunnerFunction = [TurboSequence_Asset](bool bSuccess)
-					{
-						if (!bSuccess)
-						{
-							UE_LOG(LogTurboSequence_Lf, Display, TEXT("Returning with ID=3"))
-							RepairMeshAssetAsync();
-							return;
-						}
-
-						RepairMeshAssetAsync2(TurboSequence_Asset, GEditor->GetEditorWorldContext().World(), true);
-					};
-
-					FTurboSequence_Utility_Lf::CreateRawSkinWeightTextureBuffer(
-						TurboSequence_Asset, RunnerFunction, GEditor->GetEditorWorldContext().World());
-				}
-
-				// TurboSequence_Asset->Platform = FTurboSequence_Helper_Lf::GetEditorPlatformAsString();
-				// TurboSequence_Asset->EngineVersion = FTurboSequence_Helper_Lf::GetEngineVersionAsString();
-				TurboSequence_Asset->bNeedGeneratedNextEngineStart = false;
-
-				// We need to cancel out of the loop cause otherwise we swap back the element before we reach
-				// the async end
-				UE_LOG(LogTurboSequence_Lf, Display, TEXT("Returning with ID=1"))
-				return;
-			}
-		}
-	}
-
-	if (bAssetEdited)
-	{
-		FTurboSequence_Helper_Lf::SaveAsset(TurboSequence_Asset);
-	}
-
-	// Swap back and to the next iteration
-	//UE_LOG(LogTurboSequence_Lf, Display, TEXT("Swap Back Mesh Data Asset from ID=0"))
-	if (TurboSequence_MeshAssetData_AsyncComputeSwapBack.IsValidIndex(GET0_NUMBER))
-	{
-		//UE_LOG(LogTurboSequence_Lf, Display, TEXT("Swap Back Mesh Data Asset from ID=0"))
-		TurboSequence_MeshAssetData_AsyncComputeSwapBack.RemoveAt(GET0_NUMBER);
-		RepairMeshAssetAsync();
-	}
-}
-
-void FTurboSequence_Editor_LfModule::RepairMeshAssetAsync2(const TObjectPtr<UTurboSequence_MeshAsset_Lf> Asset,
-                                                           const TObjectPtr<UWorld> World, const bool bIsCollection)
-{
-	//TObjectPtr<UWorld> World = GEditor->GetEditorWorldContext().World();
-
-	FTimerDelegate WaitTimerCallback;
-	WaitTimerCallback.BindLambda([Asset, bIsCollection, World]
-	{
-		const UPackage* Package = Asset->GetOutermost();
-		const FString PackagePath = FPackageName::LongPackageNameToFilename(
-			Package->GetName(), FPackageName::GetAssetPackageExtension());
-		UPackageTools::LoadPackage(*PackagePath);
-
-		const FString TextureName = FString(FString::Format(TEXT("T_{0}_MeshData_Texture"), {*Asset->GetName()}));
-
-		const FString& DirectoryPath = FPaths::GetPath(PackagePath);
-
-		const FString TexturePath = FPaths::Combine(DirectoryPath, TextureName) +
-			FPackageName::GetAssetPackageExtension();
-		if (FPaths::FileExists(TexturePath))
-		{
-			UPackageTools::LoadPackage(*TexturePath);
-		}
-
-		bool bIsValidData = false;
-		Asset->MeshDataTexture = FTurboSequence_Helper_Lf::GenerateTexture2DArrayFromRenderTarget2DArray(
-			Asset->GlobalData->SkinWeightTexture, TexturePath, TextureName, false, true, GET1_NUMBER, bIsValidData);
-		if (!bIsValidData)
-		{
-			if (RepairMaxIterationCounter > GET5_NUMBER)
-			{
-				UE_LOG(LogTurboSequence_Lf, Error,
-				       TEXT(
-					       "Limit reached on retries computing the Mesh Data Texture for asset -> %s | Might be an issue with your Input Mesh, it should have at least 1 vertex and have at least 1 Level Of Detail...., please regenerate the mesh asset with this given rules..."
-				       ), *Asset->GetPathName());
-
-				UE_LOG(LogTurboSequence_Lf, Display, TEXT("Swap Back Mesh Data Asset from ID=2"))
-				TurboSequence_MeshAssetData_AsyncComputeSwapBack.RemoveAt(GET0_NUMBER);
-				RepairMeshAssetAsync();
-
-				UE_LOG(LogTurboSequence_Lf, Display, TEXT("Returning with ID=2"))
-				return;
-			}
-
-			if (RepairMaxIterationCounter)
-			{
-				UE_LOG(LogTurboSequence_Lf, Warning, TEXT("Mesh Data Texture Retry -> %d from -> 5 for asset -> %s"),
-				       RepairMaxIterationCounter, *Asset->GetPathName());
-			}
-			RepairMaxIterationCounter++;
-
-			auto RunnerFunction = [Asset, bIsCollection, World](bool bSuccess)
-			{
-				if (!bSuccess)
-				{
-					UE_LOG(LogTurboSequence_Lf, Display, TEXT("Returning with ID=4"))
-					RepairMeshAssetAsync();
-					return;
-				}
-
-				RepairMeshAssetAsync2(Asset, World, bIsCollection);
-			};
-
-			FTurboSequence_Utility_Lf::CreateRawSkinWeightTextureBuffer(
-				Asset, RunnerFunction, GEditor->GetEditorWorldContext().World());
-		}
-		else
-		{
-			// Notify asset registry of new asset
-			FAssetRegistryModule::AssetCreated(Asset->MeshDataTexture);
-
-			FTurboSequence_Helper_Lf::SaveNewAsset(Asset->MeshDataTexture);
-			UE_LOG(LogTurboSequence_Lf, Display, TEXT("Written Mesh Data Texture for Asset -> %s"),
-			       *Asset.GetPathName());
-
-			FTurboSequence_Helper_Lf::SaveAsset(Asset);
-
-			if (bIsCollection)
-			{
-				if (TurboSequence_MeshAssetData_AsyncComputeSwapBack.IsValidIndex(GET0_NUMBER))
-				{
-					FTimerDelegate SwapBackCallback;
-					SwapBackCallback.BindLambda([&]
-					{
-						UE_LOG(LogTurboSequence_Lf, Display, TEXT("Swap Back Mesh Data Asset from ID=1"))
-						TurboSequence_MeshAssetData_AsyncComputeSwapBack.RemoveAt(GET0_NUMBER);
-						RepairMeshAssetAsync();
-					});
-					World->GetTimerManager().SetTimerForNextTick(SwapBackCallback);
-				}
-			}
-		}
-	 });
-	 World->GetTimerManager().SetTimerForNextTick(WaitTimerCallback);
-}
-
-int GetGPUBoneIndex(const TMap<int32, int32>& CPUBoneToGPUBoneIndicesMap,
-	const FSkinWeightVertexBuffer* SkinWeightBuffer, const uint32 VertexIndex, const TArray<FBoneIndexType> & SectionBoneMap,
-	const int InfluenceIndex)
-{
-	const uint32 SectionBoneIndex = SkinWeightBuffer->GetBoneIndex(VertexIndex, InfluenceIndex);
-	const FBoneIndexType ModelBoneIndex = SectionBoneMap[SectionBoneIndex];
-	return CPUBoneToGPUBoneIndicesMap[ModelBoneIndex];
-}
 
 void FTurboSequence_Editor_LfModule::CreateStaticMesh(UTurboSequence_MeshAsset_Lf* DataAsset)
 {
@@ -309,83 +64,208 @@ void FTurboSequence_Editor_LfModule::CreateStaticMesh(UTurboSequence_MeshAsset_L
 	const int32 NumLoDs = SkeletalMeshCopy->GetLODNum(); 
 	
 	TSet<uint32> UsedBoneSet;
+	TSet<uint32> UsedBoneSetWithParents;
 
 	FSkeletalMeshRenderData* SkeletalMeshRenderData = SkeletalMeshCopy->GetResourceForRendering();
+
+	FReferenceSkeleton& ReferenceSkeleton = OriginalMesh->GetRefSkeleton();
 	
-	for (int32 LoDIndex = 0; LoDIndex < NumLoDs; LoDIndex++)
+	bool bAddParents = true;
+
+	uint32 MaxSupportedInfluences = 4;
+	
+	for (int32 LODIndex = 0; LODIndex < NumLoDs; LODIndex++)
 	{
-		const FSkeletalMeshLODRenderData &SkeletalMeshLODRenderData = SkeletalMeshRenderData->LODRenderData[LoDIndex];
+		const FSkeletalMeshLODRenderData &SkeletalMeshLODRenderData = SkeletalMeshRenderData->LODRenderData[LODIndex];
 		const FSkinWeightVertexBuffer* SkinWeightBuffer = SkeletalMeshLODRenderData.GetSkinWeightVertexBuffer();
-		
-		const int32 NumVertices = SkeletalMeshLODRenderData.GetNumVertices();
-		for (int32 VertexIndex = 0; VertexIndex < NumVertices; ++VertexIndex)
+
+		uint32 Influences = FMath::Min(SkinWeightBuffer->GetMaxBoneInfluences(),MaxSupportedInfluences);
+
+		for (const FSkelMeshRenderSection& RenderSection : SkeletalMeshLODRenderData.RenderSections)
 		{
-			int32 SectionIndex = INDEX_NONE;
-			int32 SectionVertexIndex = INDEX_NONE;
-			SkeletalMeshLODRenderData.GetSectionFromVertexIndex(VertexIndex, SectionIndex, SectionVertexIndex);
-			const TArray<FBoneIndexType> &SectionBoneMap = SkeletalMeshLODRenderData.RenderSections[SectionIndex].BoneMap;
-				
-			for( uint32 InfluenceIndex = 0; InfluenceIndex < 4; ++InfluenceIndex)
+			TSet<int32> SectionBones;
+			
+			int32 SectionVertexBufferIndex = RenderSection.GetVertexBufferIndex();
+			for (int32 SectionVertexIndex = 0; SectionVertexIndex < RenderSection.GetNumVertices(); ++SectionVertexIndex)
 			{
-				UsedBoneSet.Add(SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, InfluenceIndex)]);
+				int32 VertexIndex = SectionVertexIndex + SectionVertexBufferIndex;
+
+				for( uint32 InfluenceIndex = 0; InfluenceIndex < Influences; ++InfluenceIndex)
+				{
+					SectionBones.Add(SkinWeightBuffer->GetBoneIndex(VertexIndex, InfluenceIndex));
+				}
+			}
+
+			for (int32 SectionBone : SectionBones)
+			{
+				int32 Bone = RenderSection.BoneMap[SectionBone];
+
+				UsedBoneSet.Add(Bone);
+				
+				while( Bone != INDEX_NONE )
+				{
+					bool bAlreadyInSet = false;
+					UsedBoneSetWithParents.Add(Bone, &bAlreadyInSet);
+					Bone = bAddParents && !bAlreadyInSet ? ReferenceSkeleton.GetParentIndex(Bone) : INDEX_NONE;	
+				}
 			}
 		}
 	}
 
-	UE_LOG(LogTurboSequence_Lf, Display, TEXT("Used bone count %d"), UsedBoneSet.Num());
-
-	TSet<uint32> UsedBoneSetWithParents;
-
-	FReferenceSkeleton& ReferenceSkeleton = OriginalMesh->GetRefSkeleton();
-
-	for (int32 Bone : UsedBoneSet)
+	//Add Sockets (and parents)
+	for (FName KeepSocket : DataAsset->KeepSockets)
 	{
-		bool bAlreadyInSet = false;
-
-		while( Bone != INDEX_NONE && !bAlreadyInSet)
+		if(USkeletalMeshSocket* SkeletalMeshSocket = DataAsset->ReferenceMeshNative->FindSocket(KeepSocket))
 		{
-			UsedBoneSetWithParents.Add(Bone, &bAlreadyInSet);
-			Bone = ReferenceSkeleton.GetParentIndex(Bone);	
+			int32 Bone = ReferenceSkeleton.FindBoneIndex(SkeletalMeshSocket->BoneName);
+
+			UsedBoneSet.Add(Bone);
+
+			while( Bone != INDEX_NONE )
+			{
+				bool bAlreadyInSet = false;
+				UsedBoneSetWithParents.Add(Bone, &bAlreadyInSet);
+				Bone = bAddParents && !bAlreadyInSet ? ReferenceSkeleton.GetParentIndex(Bone) : INDEX_NONE;	
+			}
 		}
 	}
-
-	UE_LOG(LogTurboSequence_Lf, Display, TEXT("Used bone count with parents %d"), UsedBoneSetWithParents.Num());
-
-
-	TArray<int32> UsedBoneWithParentsOrdered(UsedBoneSetWithParents.Array());
-	UsedBoneWithParentsOrdered.Sort();
 	
-	TArray<uint32> BonesAtDepth;
-	BonesAtDepth.AddDefaulted(64);
-	
-	for (int32 Bone : UsedBoneWithParentsOrdered)
-	{
-		int32 Depth = 0;
-
-		while( Bone != INDEX_NONE)
-		{
-			Bone = ReferenceSkeleton.GetParentIndex(Bone);
-			Depth++;
-		}
-		
-		BonesAtDepth[Depth-1]++;
-	}
-
-	int32 Depths = BonesAtDepth.Num();
-
-	for( int32 Depth = 0; Depth < Depths; ++Depth)
-	{
-		UE_LOG(LogTurboSequence_Lf, Display, TEXT("Depth %2d Bones %2d"), Depth, BonesAtDepth[Depth]);
-	}
-	
-	
-
-	TArray<int32> UsedBoneOrdered(UsedBoneSet.Array());
+	TArray UsedBoneOrdered(UsedBoneSetWithParents.Array());
 	UsedBoneOrdered.Sort();
 
+	TArray<int32> UsedBoneOrderedDirectParent;
+	const int32 UsedBoneCount = UsedBoneOrdered.Num();
+	for(int32 UsedBoneIndex = 0; UsedBoneIndex < UsedBoneCount; ++UsedBoneIndex)
+	{
+		UsedBoneOrderedDirectParent.Add(ReferenceSkeleton.GetParentIndex(UsedBoneOrdered[UsedBoneIndex]));
+	}
+
+	//Initialise the local parent bone cache to INDEX_NONE
+	const int MaxParentCache = 5;
+	int MaxParentCacheUsed = 0;
+
+	TArray<int32> EmptyCache;
+
+	EmptyCache.Init(INDEX_NONE,MaxParentCache );
+
+	TArray< TArray<int32> > UsedBoneParentCache;
+	for(int32 UsedBoneIndex = 0; UsedBoneIndex < UsedBoneCount; ++UsedBoneIndex)
+	{
+		UsedBoneParentCache.Add(EmptyCache);
+	}
+
+	//Allocate the lines in the local parent cache
+	TArray<int32> UsedBoneParentWriteIndex; //INDEX_NONE no write, 0 nothing, 1 and beyond local bone cache
+
+	UsedBoneParentWriteIndex.Init(INDEX_NONE, UsedBoneCount);
+	
+	for(int32 UsedBoneIndex = 0; UsedBoneIndex < UsedBoneCount; ++UsedBoneIndex)
+	{
+		uint32 BoneIndex = UsedBoneOrdered[UsedBoneIndex];
+		int32 FirstUse = UsedBoneIndex;
+		int32 LastUseAsParent;
+
+		//If LastUse is more than the next index away from first use, the bone will need to exist in the cache from first use -1 last use
+		if(UsedBoneOrderedDirectParent.FindLast(BoneIndex, LastUseAsParent))
+		{
+			if(LastUseAsParent > FirstUse + 1)
+			{
+				int32 FoundLine = INDEX_NONE;
+				//Add the parent to the local cache and assign a position
+				//Allocate a cache line that the bone can exist on for the duration it is needed
+				for(int32 CacheIndex = 0; CacheIndex < MaxParentCache; ++CacheIndex)
+				{
+					bool LineClear = true;
+					
+					for(int32 UseIndex = FirstUse; UseIndex < LastUseAsParent; ++UseIndex)
+					{
+						if(UsedBoneParentCache[UseIndex][CacheIndex] != INDEX_NONE)
+						{
+							LineClear = false;
+							break;
+						}
+					}
+
+					if(LineClear)
+					{
+						FoundLine = CacheIndex;
+						break;
+					}
+				}
+
+				if(FoundLine != INDEX_NONE)
+				{
+					//Allocate the line
+					for(int32 UseIndex = FirstUse; UseIndex < LastUseAsParent; ++UseIndex)
+					{
+						UsedBoneParentCache[UseIndex][FoundLine] = BoneIndex;
+					}
+
+					UsedBoneParentWriteIndex[FirstUse] = FoundLine + 1; //Needs to be written to the local cache
+					
+					MaxParentCacheUsed = FMath::Max(MaxParentCacheUsed, FoundLine);
+				}
+			}
+		}
+	}
+
+	
+
+	//Encode the cache read/write instructions
+	
+	TArray<int32> UsedBoneParentReadIndex; //-1 no parent (reset), 0 previous bone parent, 1 and beyond local bone cache
+
+	for(int32 UsedBoneIndex = 0; UsedBoneIndex < UsedBoneCount; ++UsedBoneIndex)
+	{
+		const int32 BoneParentIndex = UsedBoneOrderedDirectParent[UsedBoneIndex];
+
+		if(BoneParentIndex != INDEX_NONE)
+		{
+			const int32 BoneIndex = UsedBoneOrdered[UsedBoneIndex];
+			
+			if (BoneParentIndex == BoneIndex - 1)
+			{
+				UsedBoneParentReadIndex.Add(0);
+			}
+			else
+			{
+				int32 PreviousCacheLine = UsedBoneIndex - 1;
+				//Find the cache line to read from (read from previous cache line)
+				if(PreviousCacheLine > 0)
+				{
+					const TArray<int32>& CachedBones = UsedBoneParentCache[PreviousCacheLine];
+					int32 ParentCacheIndex = CachedBones.Find(BoneParentIndex);
+				
+					UsedBoneParentReadIndex.Add(ParentCacheIndex + 1);
+				}
+				else
+				{
+					UsedBoneParentReadIndex.Add(0);
+				}
+				
+			}
+		}
+		else
+		{
+			UsedBoneParentReadIndex.Add(INDEX_NONE);
+		}
+
+	}
+	
+	//Print the cache
+	for(int32 UsedBoneIndex = 0; UsedBoneIndex < UsedBoneCount; ++UsedBoneIndex)
+	{
+		uint32 BoneIndex = UsedBoneOrdered[UsedBoneIndex];
+	
+		TArray<int32> &Cache = UsedBoneParentCache[UsedBoneIndex];
+	 	
+		UE_LOG(LogTurboSequence_Lf, Display, TEXT("Bone %d, Parent %d, %d, %d, %d, %d, %d, read %d, write %d "), BoneIndex, UsedBoneOrderedDirectParent[UsedBoneIndex], Cache[0],Cache[1],Cache[2],Cache[3],Cache[4], UsedBoneParentReadIndex[UsedBoneIndex], UsedBoneParentWriteIndex[UsedBoneIndex]  );
+	}
+
+	UE_LOG(LogTurboSequence_Lf, Display, TEXT("MaxParentCacheUsed %d"), MaxParentCacheUsed);
+	
 	TMap<int32, int32> CPUBoneToGPUBoneIndicesMap;
 		
-	int32 UsedBoneCount = UsedBoneOrdered.Num();
 	for(int32 RemappedIndex = 0; RemappedIndex < UsedBoneCount; ++RemappedIndex)
 	{
 		CPUBoneToGPUBoneIndicesMap.Add(UsedBoneOrdered[RemappedIndex],RemappedIndex);
@@ -438,42 +318,48 @@ void FTurboSequence_Editor_LfModule::CreateStaticMesh(UTurboSequence_MeshAsset_L
 		BeginInitResource(&StaticMeshVertexBuffer, &UE::RenderCommandPipe::SkeletalMesh);
 
 		const FSkinWeightVertexBuffer* SkinWeightBuffer = LODData.GetSkinWeightVertexBuffer();
-		
-		for (uint32 VertexIndex = 0; VertexIndex < NumVertices; ++VertexIndex)
+
+		uint32 Influences = FMath::Min(SkinWeightBuffer->GetMaxBoneInfluences(),MaxSupportedInfluences);
+
+		for (const FSkelMeshRenderSection& RenderSection : LODData.RenderSections)
 		{
-			int32 SectionIndex = INDEX_NONE;
-			int32 SectionVertexIndex = INDEX_NONE;
-			LODData.GetSectionFromVertexIndex(VertexIndex, SectionIndex, SectionVertexIndex);
-			const TArray<FBoneIndexType> &SectionBoneMap = LODData.RenderSections[SectionIndex].BoneMap;
-
-			FColor BoneIndices;
+			const TArray<FBoneIndexType> &SectionBoneMap = RenderSection.BoneMap;
+			const int32 SectionVertexBufferIndex = RenderSection.GetVertexBufferIndex();
 			
-			BoneIndices.R = CPUBoneToGPUBoneIndicesMap[SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, 0)]];
-			BoneIndices.G = CPUBoneToGPUBoneIndicesMap[SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, 1)]];
-			BoneIndices.B = CPUBoneToGPUBoneIndicesMap[SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, 2)]];
-			BoneIndices.A = CPUBoneToGPUBoneIndicesMap[SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, 3)]];
+			for (int32 SectionVertexIndex = 0; SectionVertexIndex < RenderSection.GetNumVertices(); ++SectionVertexIndex)
+			{
+				const int32 VertexIndex = SectionVertexIndex + SectionVertexBufferIndex;
+				
+				FColor BoneIndices;
+			
+				BoneIndices.R = CPUBoneToGPUBoneIndicesMap[SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, 0)]];
+				BoneIndices.G = CPUBoneToGPUBoneIndicesMap[SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, 1)]];
+				BoneIndices.B = CPUBoneToGPUBoneIndicesMap[SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, 2)]];
+				BoneIndices.A = CPUBoneToGPUBoneIndicesMap[SectionBoneMap[SkinWeightBuffer->GetBoneIndex(VertexIndex, 3)]];
 
-			ColorVertexBuffer.VertexColor(VertexIndex) = BoneIndices;
+				ColorVertexBuffer.VertexColor(VertexIndex) = BoneIndices;
 
-			//Copy the tangents
-			StaticMeshVertexBuffer.SetVertexTangents(VertexIndex, TangentX[VertexIndex],  TangentY[VertexIndex],TangentZ[VertexIndex]);
-			//Copy the first uv channel
-			StaticMeshVertexBuffer.SetVertexUV(VertexIndex, 0, UV0[VertexIndex]);
+				//Copy the tangents
+				StaticMeshVertexBuffer.SetVertexTangents(VertexIndex, TangentX[VertexIndex],  TangentY[VertexIndex],TangentZ[VertexIndex]);
+				//Copy the first uv channel
+				StaticMeshVertexBuffer.SetVertexUV(VertexIndex, 0, UV0[VertexIndex]);
 
-			//Weights
-			FVector4 Weights;
-			Weights.X = SkinWeightBuffer->GetBoneWeight(VertexIndex, 0);
-			Weights.Y = SkinWeightBuffer->GetBoneWeight(VertexIndex, 1);
-			Weights.Z = SkinWeightBuffer->GetBoneWeight(VertexIndex, 2);
-			Weights.W = SkinWeightBuffer->GetBoneWeight(VertexIndex, 3);
-			Weights *= UE::AnimationCore::InvMaxRawBoneWeightFloat; 
+				//Weights
+				FVector4 Weights;
+				Weights.X = SkinWeightBuffer->GetBoneWeight(VertexIndex, 0);
+				Weights.Y = SkinWeightBuffer->GetBoneWeight(VertexIndex, 1);
+				Weights.Z = SkinWeightBuffer->GetBoneWeight(VertexIndex, 2);
+				Weights.W = SkinWeightBuffer->GetBoneWeight(VertexIndex, 3);
+				Weights *= UE::AnimationCore::InvMaxRawBoneWeightFloat; 
 
-			float Sum = Weights.X + Weights.Y + Weights.Z + Weights.W;
-			//Scale so sum to 1.0
-			Weights *= 1.0f / Sum;
+				float Sum = Weights.X + Weights.Y + Weights.Z + Weights.W;
+				//Scale so sum to 1.0
+				Weights *= 1.0f / Sum;
 
-			StaticMeshVertexBuffer.SetVertexUV(VertexIndex, UVChannel+0, FVector2f(Weights.X, Weights.Y));
-			StaticMeshVertexBuffer.SetVertexUV(VertexIndex, UVChannel+1, FVector2f(Weights.Z, Weights.W));
+				StaticMeshVertexBuffer.SetVertexUV(VertexIndex, UVChannel+0, FVector2f(Weights.X, Weights.Y));
+				StaticMeshVertexBuffer.SetVertexUV(VertexIndex, UVChannel+1, FVector2f(Weights.Z, Weights.W));
+				
+			}
 		}
 	}
 	
@@ -491,7 +377,7 @@ void FTurboSequence_Editor_LfModule::CreateStaticMesh(UTurboSequence_MeshAsset_L
 	
 	FString PackageName;
 
-	UStaticMesh* ExistingMesh = DataAsset->InstancedMeshes.Num() > 0 ? DataAsset->InstancedMeshes[0].StaticMesh.Get() : nullptr;
+	const UStaticMesh* ExistingMesh = DataAsset->StaticMesh.Get();
 
 	UBodySetup* ExistingBodySetup = nullptr; 
 	
@@ -506,7 +392,7 @@ void FTurboSequence_Editor_LfModule::CreateStaticMesh(UTurboSequence_MeshAsset_L
 		const FString SanitizedBasePackageName = UPackageTools::SanitizePackageName(AssetName);
 		const FString DataAssetPackageName = FPackageName::GetLongPackagePath(SanitizedBasePackageName) + TEXT("/");
 			
-		PackageName = DataAssetPackageName + SkeletalMeshCopy->GetName().Replace(TEXT("SK_"),TEXT("SM_TS_"));
+		PackageName = DataAssetPackageName + OriginalMesh->GetName().Replace(TEXT("SK_"),TEXT("SM_TS_"));
 	}
 
 	//Create a static mesh
@@ -531,10 +417,11 @@ void FTurboSequence_Editor_LfModule::CreateStaticMesh(UTurboSequence_MeshAsset_L
 	StaticMesh->bAutoComputeLODScreenSize = false;
 	
 	// LOD Info for ScreenSize
-	const TArray<FSkeletalMeshLODInfo>& LODInfoArray = SkeletalMeshCopy->GetLODInfoArray();
-	for (int32 LODIndex = 0; LODIndex < LODInfoArray.Num(); LODIndex++)
+	for (int32 LODIndex = 0; LODIndex < SkeletalMeshCopy->GetLODNum(); LODIndex++)
 	{
-		FPerPlatformFloat ScreenSize = LODInfoArray[LODIndex].ScreenSize;
+		FSkeletalMeshLODInfo* SkeletalMeshLODInfo = SkeletalMeshCopy->GetLODInfo(LODIndex);
+
+		FPerPlatformFloat ScreenSize = SkeletalMeshLODInfo->ScreenSize;
 		if (StaticMesh->IsSourceModelValid(LODIndex))
 		{
 			FStaticMeshSourceModel& SourceModel = StaticMesh->GetSourceModel(LODIndex);
@@ -548,16 +435,22 @@ void FTurboSequence_Editor_LfModule::CreateStaticMesh(UTurboSequence_MeshAsset_L
 	StaticMesh->PostEditChange();
 	StaticMesh->MarkPackageDirty();
 
-	DataAsset->InstancedMeshes.Empty();
-	FMeshItem_Lf MeshItemLod0;
-	MeshItemLod0.StaticMesh = StaticMesh;
-	DataAsset->InstancedMeshes.Add(MeshItemLod0);
+	DataAsset->StaticMesh = StaticMesh;
 
-	DataAsset->MeshData.Empty();
-	FMeshData_Lf MeshDataLod0;
-	MeshDataLod0.NumVertices = StaticMesh->GetNumVertices(0); //SkeletalMeshRenderData->LODRenderData[0].GetNumVertices();
-	MeshDataLod0.CPUBoneToGPUBoneIndicesMap = CPUBoneToGPUBoneIndicesMap;
-	DataAsset->MeshData.Add(MeshDataLod0);
+	if(!IsValid(ExistingMesh))
+	{
+		DataAsset->Materials.Empty();
+		
+		for (const FStaticMaterial& StaticMaterial : StaticMesh->GetStaticMaterials())
+		{
+			DataAsset->Materials.Add(StaticMaterial.MaterialInterface);
+		}
+	}
+	
+	DataAsset->CPUBoneToGPUBoneIndicesMap = CPUBoneToGPUBoneIndicesMap;
+	DataAsset->GPUParentCacheRead = UsedBoneParentReadIndex;
+	DataAsset->GPUParentCacheWrite = UsedBoneParentWriteIndex;
+
 		
 	DataAsset->MarkPackageDirty();
 	
@@ -581,7 +474,7 @@ void FTurboSequence_Editor_LfModule::OnFilesLoaded()
 	if (GlobalAssetData.Num())
 	{
 		FTurboSequence_Helper_Lf::SortAssetsByPathName(GlobalAssetData);
-		GlobalData = Cast<UTurboSequence_GlobalData_Lf>(GlobalAssetData[GET0_NUMBER].GetAsset());
+		GlobalData = Cast<UTurboSequence_GlobalData_Lf>(GlobalAssetData[0].GetAsset());
 
 		bool bAssetEdited = false;
 
@@ -591,7 +484,7 @@ void FTurboSequence_Editor_LfModule::OnFilesLoaded()
 		FString PositionName = FString("");
 		FString RotationName = FString("");
 		FString ScaleName = FString("");
-		FString LodName = FString("");
+		FString FlagsName = FString("");
 		FString CustomDataName = FString("");
 		FTurboSequence_Helper_Lf::GetStringConfigSetting(EmitterName,
 		                                                 TEXT(
@@ -617,7 +510,7 @@ void FTurboSequence_Editor_LfModule::OnFilesLoaded()
 		                                                 TEXT(
 			                                                 "/Script/TurboSequence_Editor_Lf.TurboSequence_NiagaraSettings_Lf"),
 		                                                 TEXT("NameNiagaraParticleScales"));
-		FTurboSequence_Helper_Lf::GetStringConfigSetting(LodName,
+		FTurboSequence_Helper_Lf::GetStringConfigSetting(FlagsName,
 		                                                 TEXT(
 			                                                 "/Script/TurboSequence_Editor_Lf.TurboSequence_NiagaraSettings_Lf"),
 		                                                 TEXT("NameNiagaraLevelOfDetailIndex"));
@@ -649,9 +542,9 @@ void FTurboSequence_Editor_LfModule::OnFilesLoaded()
 		{
 			ScaleName = FTurboSequence_Helper_Lf::NameNiagaraParticleScales;
 		}
-		if (LodName.IsEmpty())
+		if (FlagsName.IsEmpty())
 		{
-			LodName = FTurboSequence_Helper_Lf::NameNiagaraLevelOfDetailIndex;
+			FlagsName = FTurboSequence_Helper_Lf::NameNiagaraLevelOfDetailIndex;
 		}
 		if (CustomDataName.IsEmpty())
 		{
@@ -682,7 +575,7 @@ void FTurboSequence_Editor_LfModule::OnFilesLoaded()
 		{
 			bAssetEdited = true;
 		}
-		if (GlobalData->NameNiagaraLevelOfDetailIndex.ToString() != LodName)
+		if (GlobalData->NameNiagaraFlags.ToString() != FlagsName)
 		{
 			bAssetEdited = true;
 		}
@@ -704,7 +597,7 @@ void FTurboSequence_Editor_LfModule::OnFilesLoaded()
 		GlobalData->NameNiagaraParticleLocations = FName(PositionName);
 		GlobalData->NameNiagaraParticleRotations = FName(RotationName);
 		GlobalData->NameNiagaraParticleScales = FName(ScaleName);
-		GlobalData->NameNiagaraLevelOfDetailIndex = FName(LodName);
+		GlobalData->NameNiagaraFlags = FName(FlagsName);
 		GlobalData->NameNiagaraCustomData = FName(CustomDataName);
 
 
@@ -749,7 +642,7 @@ void FTurboSequence_Editor_LfModule::OnFilesLoaded()
 					Package->GetName(), FPackageName::GetAssetPackageExtension());
 				UPackageTools::LoadPackage(*PackagePath);
 				GlobalData->TransformTexture_CurrentFrame = FTurboSequence_Helper_Lf::GenerateBlankRenderTargetArray(
-					PackagePath, GlobalData->TransformTexture_CurrentFrame->GetName(), GET2048_NUMBER, GET12_NUMBER,
+					PackagePath, GlobalData->TransformTexture_CurrentFrame->GetName(), 2048, 12,
 					GetPixelFormatFromRenderTargetFormat(Format));
 			}
 		}
@@ -799,44 +692,7 @@ void FTurboSequence_Editor_LfModule::OnFilesLoaded()
 					GlobalData->TransformTexture_CurrentFrame->GetFormat());
 			}
 		}
-
-
-		FString DefaultSkinWeightTextureReferencePath;
-		FTurboSequence_Helper_Lf::GetStringConfigSetting(DefaultSkinWeightTextureReferencePath,
-		                                                 TEXT(
-			                                                 "/Script/TurboSequence_Editor_Lf.TurboSequence_RefSettings_Lf"),
-		                                                 TEXT("Default_Rendering_TransformTexture"));
-		if (DefaultSkinWeightTextureReferencePath.IsEmpty())
-		{
-			DefaultSkinWeightTextureReferencePath = FTurboSequence_Helper_Lf::ReferenceTurboSequenceSkinWeightTexture;
-		}
-		if (!IsValid(GlobalData->SkinWeightTexture))
-		{
-			bAssetEdited = true;
-			GlobalData->SkinWeightTexture = FTurboSequence_Helper_Lf::LoadAssetFromReferencePath<
-				UTextureRenderTarget2DArray>(DefaultSkinWeightTextureReferencePath);
-		}
-		if (!IsValid(GlobalData->SkinWeightTexture))
-		{
-			UE_LOG(LogTurboSequence_Lf, Error,
-			       TEXT(
-				       "Can not find Skin Weight Texture, it should at .../Plugins/TurboSequence_Lf/Resources/T_TurboSequence_SkinWeightTexture_Lf, please assign it manually in the Project settings under TurboSequence Lf -> Reference Paths, if it's not there please create a default Render Target 2D Array Texture and assign the reference in the TurboSequence Lf -> Reference Paths Project settings and open ../Plugins/TurboSequence_Lf/Resources/MF_TurboSequence_PositionOffset_Lf and assign it into the Texture Object with the Skin Weight Texture Comment"
-			       ));
-		}
-		else
-		{
-			if (GlobalData->SkinWeightTexture->GetFormat() != GetPixelFormatFromRenderTargetFormat(RTF_RGBA16f))
-			{
-				bAssetEdited = true;
-				const UPackage* Package = GlobalData->SkinWeightTexture->GetOutermost();
-				const FString PackagePath = FPackageName::LongPackageNameToFilename(
-					Package->GetName(), FPackageName::GetAssetPackageExtension());
-				UPackageTools::LoadPackage(*PackagePath);
-				GlobalData->SkinWeightTexture = FTurboSequence_Helper_Lf::GenerateBlankRenderTargetArray(
-					PackagePath, GlobalData->SkinWeightTexture->GetName(), GET128_NUMBER, GET24_NUMBER,
-					GetPixelFormatFromRenderTargetFormat(RTF_RGBA16f));
-			}
-		}
+		
 
 		FString DefaultDataTextureReferencePath;
 		FTurboSequence_Helper_Lf::GetStringConfigSetting(DefaultDataTextureReferencePath,
@@ -869,7 +725,6 @@ void FTurboSequence_Editor_LfModule::OnFilesLoaded()
 
 	if (TurboSequence_MeshAssetData_AsyncComputeSwapBack.Num())
 	{
-		RepairMeshAssetAsync();
 	}
 }
 

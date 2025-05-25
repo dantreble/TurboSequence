@@ -32,86 +32,9 @@ DECLARE_LOG_CATEGORY_EXTERN(LogTurboSequence_Lf, Log, All);
 
 inline DEFINE_LOG_CATEGORY(LogTurboSequence_Lf);
 
-
-//         creates INFINITY AS 4 Byte value
-#define GET_INFINITY ( TNumericLimits<float>::Max() )
-
-//         creates 0 AS 1 Byte value
-#define GET0_NUMBER ( static_cast<uint8>(0) )
-//         creates 1 AS 1 Byte value -> It'S a power of 2 value
-#define GET1_NUMBER ( static_cast<uint8>(1) )
-//         creates 2 AS 1 Byte value -> It'S a power of 2 value
-#define GET2_NUMBER ( static_cast<uint8>(2) )
-//         creates 3 AS 1 Byte value
-#define GET3_NUMBER ( static_cast<uint8>(3) )
-//         creates 4 AS 1 Byte value -> It'S a power of 2 value
-#define GET4_NUMBER ( static_cast<uint8>(4) )
-//         creates 5 AS 1 Byte value
-#define GET5_NUMBER ( static_cast<uint8>(5) )
-//         creates 6 AS 1 Byte value
-#define GET6_NUMBER ( static_cast<uint8>(6) )
-//         creates 7 AS 1 Byte value
-#define GET7_NUMBER ( static_cast<uint8>(7) )
-//         creates 8 AS 1 Byte value -> It'S a power of 2 value
-#define GET8_NUMBER ( static_cast<uint8>(8) )
-//         creates 9 AS 1 Byte value
-#define GET9_NUMBER ( static_cast<uint8>(9) )
-//         creates 10 AS 1 Byte value
-#define GET10_NUMBER ( static_cast<uint8>(10) )
-//         creates 11 AS 1 Byte value
-#define GET11_NUMBER ( static_cast<uint8>(11) )
-//         creates 12 AS 1 Byte value
-#define GET12_NUMBER ( static_cast<uint8>(12) )
-//         creates 13 AS 1 Byte value
-#define GET13_NUMBER ( static_cast<uint8>(13) )
-//         creates 16 AS 1 Byte value -> It'S a power of 2 value
-#define GET16_NUMBER ( static_cast<uint8>(16) )
-//         creates 17 AS 1 Byte value
-#define GET17_NUMBER ( static_cast<uint8>(17) )
-//         creates 18 AS 1 Byte value
-#define GET18_NUMBER ( static_cast<uint8>(18) )
-//         creates 19 AS 1 Byte value
-#define GET19_NUMBER ( static_cast<uint8>(19) )
-//         creates 24 AS 1 Byte value
-#define GET24_NUMBER ( static_cast<uint8>(24) )
-//         creates 32 AS 1 Byte value -> It'S a power of 2 value
-#define GET32_NUMBER ( static_cast<uint8>(32) )
-//         creates 60 AS 1 Byte value
-#define GET60_NUMBER ( static_cast<uint8>(60) )
-//         creates 100 AS 1 Byte value
-#define GET100_NUMBER ( static_cast<uint8>(100) )
-//         creates 128 AS 1 Byte value -> It'S a power of 2 value
-#define GET128_NUMBER ( static_cast<uint8>(128) )
-
-//         creates 512 AS 2 Byte value -> It'S a power of 2 value
-#define GET512_NUMBER ( static_cast<uint16>(512) )
-//         creates 1000 AS 2 Byte value
-#define GET1000_NUMBER ( static_cast<uint16>(1000) )
-//         creates 1024 AS 2 Byte value -> It'S a power of 2 value
-#define GET1024_NUMBER ( static_cast<uint16>(1024) )
-//         creates 2048 AS 2 Byte value -> It'S a power of 2 value
-#define GET2048_NUMBER ( static_cast<uint16>(2048) )
-//         creates 4096 AS 2 Byte value -> It'S a power of 2 value
-#define GET4096_NUMBER ( static_cast<uint16>(4096) )
-//         creates 5500 AS 2 Byte value
-#define GET5500_NUMBER ( static_cast<uint16>(5500) )
-//         creates 6000 AS 2 Byte value
-#define GET6000_NUMBER ( static_cast<uint16>(6000) )
-//         creates 8192 AS 2 Byte value -> It'S a power of 2 value
-#define GET8192_NUMBER ( static_cast<uint16>(8192) )
-
-
-//         creates -1 AS 1 Byte value -> It'S a negative power of 2 value
-#define GET1_NEGATIVE_NUMBER ( static_cast<int8>(-1) )
-//         creates -20 AS 1 Byte value
-#define GET20_NEGATIVE_NUMBER ( static_cast<int8>(-20) )
-//         creates -45 AS 1 Byte value
-#define GET45_NEGATIVE_NUMBER ( static_cast<int8>(-45) )
-//         creates -100 AS 1 Byte value
-#define GET100_NEGATIVE_NUMBER ( static_cast<int8>(-100) )
-//         creates -135 AS 2 Byte value
-#define GET135_NEGATIVE_NUMBER ( static_cast<int16>(-135) )
-
+#ifndef TURBO_SEQUENCE_DEBUG_GPU_READBACK
+#define TURBO_SEQUENCE_DEBUG_GPU_READBACK 0
+#endif
 
 // -> Licence Start
 // Copyright Epic Games, Inc. All Rights Reserved.
@@ -149,15 +72,7 @@ USTRUCT()
 struct TURBOSEQUENCE_HELPERMODULE_LF_API FTurboSequence_TransposeMatrix_Lf
 {
 	GENERATED_BODY()
-
-	FTurboSequence_TransposeMatrix_Lf()
-	{
-	}
-
-	~FTurboSequence_TransposeMatrix_Lf()
-	{
-	}
-
+	
 	TStaticArray<FVector4f, 3> Colum;
 };
 
@@ -244,12 +159,12 @@ struct TURBOSEQUENCE_HELPERMODULE_LF_API FAnimPose_Lf
 				const FMatrix& PoseMatrix = PoseTransform.ToMatrixWithScale();
 
 				FTurboSequence_TransposeMatrix_Lf FinalPoseMatrix;
-				for (uint8 M = GET0_NUMBER; M < GET3_NUMBER; ++M)
+				for (uint8 M = 0; M < 3; ++M)
 				{
-					FinalPoseMatrix.Colum[M].X = PoseMatrix.M[GET0_NUMBER][M];
-					FinalPoseMatrix.Colum[M].Y = PoseMatrix.M[GET1_NUMBER][M];
-					FinalPoseMatrix.Colum[M].Z = PoseMatrix.M[GET2_NUMBER][M];
-					FinalPoseMatrix.Colum[M].W = PoseMatrix.M[GET3_NUMBER][M];
+					FinalPoseMatrix.Colum[M].X = PoseMatrix.M[0][M];
+					FinalPoseMatrix.Colum[M].Y = PoseMatrix.M[1][M];
+					FinalPoseMatrix.Colum[M].Z = PoseMatrix.M[2][M];
+					FinalPoseMatrix.Colum[M].W = PoseMatrix.M[3][M];
 				}
 
 				LocalSpacePoses[BoneIndices.IndexOfByKey(SkeletonBoneIndex)] = FinalPoseMatrix;
@@ -343,12 +258,11 @@ public:
 		return GetTargetPlatformManagerRef().GetRunningTargetPlatform()->PlatformName();
 	}
 
-	static constexpr uint8 NumGPUTextureBoneBuffer = GET3_NUMBER;
-	static constexpr uint8 NumGPUBoneIKBuffer = GET3_NUMBER;
-	//inline static constexpr uint8 NumInstanceCustomDataPixel = GET2_NUMBER; // Four 16 bit floats per patch
-	static constexpr uint8 NumInstanceCustomData = GET16_NUMBER; // Max Niagara
-	static constexpr uint8 NumCustomStates = GET1_NUMBER;
-	static constexpr uint8 NumSkinWeightPixels = GET7_NUMBER; // 6 For the weights, 1 for custom data
+	static constexpr uint8 NumGPUTextureBoneBuffer = 3;
+	static constexpr uint8 NumGPUBoneIKBuffer = 3;
+	//inline static constexpr uint8 NumInstanceCustomDataPixel = 2; // Four 16 bit floats per patch
+	static constexpr int32 NumInstanceCustomData = 3; // Max Niagara
+	static constexpr uint8 NumCustomStates = 1;
 
 	inline static const FString PluginConfigName = FString("TurboSequence_Lf.ini");
 
@@ -365,7 +279,7 @@ public:
 	inline static const FString NameNiagaraParticleRotations = FString("User.Particle_Rotation");
 	inline static const FString NameNiagaraParticleScales = FString("User.Particle_Scale");
 	// inline static const FName NameNiagaraParticleIndex = FName("User.Particle_Index");
-	inline static const FString NameNiagaraLevelOfDetailIndex = FString("User.LevelOfDetail_Index");
+	inline static const FString NameNiagaraLevelOfDetailIndex = FString("User.Particle_Flags");
 	inline static const FString NameNiagaraCustomData = FString("User.CustomData");
 
 
@@ -378,7 +292,7 @@ public:
 	inline static const FString ReferenceTurboSequenceDataTexture = FString(
 		"/Script/Engine.TextureRenderTarget2DArray'/TurboSequence_Lf/Resources/T_TurboSequence_DataTexture_Lf.T_TurboSequence_DataTexture_Lf'");
 
-	static constexpr uint8 NotVisibleMeshIndex = GET13_NUMBER;
+	static constexpr uint8 NotVisibleMeshIndex = 13;
 	
 	// -> Licence Start
 	// Copyright Epic Games, Inc. All Rights Reserved.
@@ -506,7 +420,7 @@ public:
 		}
 		UE_LOG(LogTurboSequence_Lf, Warning, TEXT("No bone with name %s was found"), *BoneName.ToString());
 
-		return Pose.LocalSpacePoses[GET0_NUMBER];
+		return Pose.LocalSpacePoses[0];
 	}
 
 	static float GetAnimationCurveWeight(const FAnimPose_Lf& Pose, const FName& CurveName)
@@ -523,7 +437,7 @@ public:
 	static FORCEINLINE_DEBUGGABLE void GetPoseInfo(float FrameTime,
 	                                               const UAnimSequenceBase* AnimationSequenceBase,
 	                                               const FAnimPoseEvaluationOptions_Lf& EvaluationOptions,
-	                                               FAnimPose_Lf& OutPose, FCriticalSection& CriticalSection)
+	                                               FAnimPose_Lf& OutPose)
 	{
 		FMemMark Mark(FMemStack::Get());
 
@@ -619,13 +533,13 @@ public:
 	static FORCEINLINE_DEBUGGABLE int16 NumCPUThreads()
 	{
 		static int16 NumThreads = INDEX_NONE;
-		if (NumThreads < GET1_NUMBER)
+		if (NumThreads < 1)
 		{
 			NumThreads = std::thread::hardware_concurrency();
 
-			if (NumThreads < GET1_NUMBER)
+			if (NumThreads < 1)
 			{
-				NumThreads = GET4_NUMBER;
+				NumThreads = 4;
 			}
 		}
 
@@ -633,6 +547,16 @@ public:
 	}
 
 	static FORCEINLINE_DEBUGGABLE FVector4f ConvertQuaternionToVector4F(const FQuat& Quaternion)
+	{
+		return FVector4f(Quaternion.X, Quaternion.Y, Quaternion.Z, Quaternion.W);
+	}
+
+	static FORCEINLINE_DEBUGGABLE FVector4 ConvertQuaternionToVector4(const FQuat& Quaternion)
+	{
+		return FVector4(Quaternion.X, Quaternion.Y, Quaternion.Z, Quaternion.W);
+	}
+
+	static FORCEINLINE_DEBUGGABLE FVector4f ConvertQuaternion4FToVector4F(const FQuat4f& Quaternion)
 	{
 		return FVector4f(Quaternion.X, Quaternion.Y, Quaternion.Z, Quaternion.W);
 	}
@@ -653,16 +577,12 @@ public:
 	}
 
 	template <typename TValue>
-	static FORCEINLINE_DEBUGGABLE void CheckArrayHasSize(const TArray<TValue>& Array, uint8 Id)
+	static FORCEINLINE_DEBUGGABLE void CheckArrayHasSize(TArray<TValue>& Array)
 	{
-		if (!Array.Num())
+		if(Array.IsEmpty())
 		{
-			UE_LOG(LogTurboSequence_Lf, Warning, TEXT("Array with ID -> %d is Length 0"), Id);
+			Array.AddDefaulted();
 		}
-		// else if (Array.Num() > 1000 && Id != -1)
-		// {
-		// 	UE_LOG(LogTurboSequence_Lf, Warning, TEXT("Array with ID -> %d is Length Greater than 22000 -> %d"), Id, Array.Num());
-		// }
 	}
 
 
@@ -673,7 +593,7 @@ public:
 	 */
 	static FORCEINLINE_DEBUGGABLE float Clamp01(float Input)
 	{
-		return FMath::Clamp(Input, GET0_NUMBER, GET1_NUMBER);
+		return FMath::Clamp(Input, 0, 1);
 	}
 
 	/**
@@ -686,11 +606,7 @@ public:
 	static constexpr FORCEINLINE_DEBUGGABLE float GetPercentageBetweenMinMax(float Current, float Min,
 	                                                                         float Max)
 	{
-		if (Min == Max)
-		{
-			return GET1_NUMBER;
-		}
-		return (Current - Min) / (Max - Min);
+		return FMath::GetRangePct(Min,Max,Current);
 	}
 
 
@@ -720,7 +636,7 @@ public:
 	}
 
 
-	static FORCEINLINE_DEBUGGABLE void GetCameraFrustumPlanes_ObjectSpace(FPlane (&Out_ObjectSpace_Planes)[GET6_NUMBER],
+	static FORCEINLINE_DEBUGGABLE void GetCameraFrustumPlanes_ObjectSpace(FPlane (&Out_ObjectSpace_Planes)[6],
 	                                                                      float Fov, const FVector2f ViewportSize,
 	                                                                      const TOptional<EAspectRatioAxisConstraint>
 	                                                                      InAspectRatioAxisConstraint,
@@ -806,23 +722,23 @@ public:
 
 		if (bOrthographicModeEnabled)
 		{
-			Out_ObjectSpace_Planes[GET0_NUMBER] = FPlane(NearRTopEdge, RTopEdge, LTopEdge); // Top plane
-			Out_ObjectSpace_Planes[GET1_NUMBER] = FPlane(NearLBottomEdge, LBottomEdge, RBottomEdge); // Bottom plane
-			Out_ObjectSpace_Planes[GET2_NUMBER] = FPlane(NearRBottomEdge, RBottomEdge, RTopEdge); // Right plane
-			Out_ObjectSpace_Planes[GET3_NUMBER] = FPlane(NearLTopEdge, LTopEdge, LBottomEdge); // Left plane
+			Out_ObjectSpace_Planes[0] = FPlane(NearRTopEdge, RTopEdge, LTopEdge); // Top plane
+			Out_ObjectSpace_Planes[1] = FPlane(NearLBottomEdge, LBottomEdge, RBottomEdge); // Bottom plane
+			Out_ObjectSpace_Planes[2] = FPlane(NearRBottomEdge, RBottomEdge, RTopEdge); // Right plane
+			Out_ObjectSpace_Planes[3] = FPlane(NearLTopEdge, LTopEdge, LBottomEdge); // Left plane
 
-			Out_ObjectSpace_Planes[GET4_NUMBER] = FPlane(Direction * NearClippingPlane, Direction); // Near plane
-			Out_ObjectSpace_Planes[GET5_NUMBER] = FPlane(Direction * FarClippingPlane, -Direction); // Far plane
+			Out_ObjectSpace_Planes[4] = FPlane(Direction * NearClippingPlane, Direction); // Near plane
+			Out_ObjectSpace_Planes[5] = FPlane(Direction * FarClippingPlane, -Direction); // Far plane
 		}
 		else
 		{
-			Out_ObjectSpace_Planes[GET0_NUMBER] = FPlane(FVector::ZeroVector, RTopEdge, LTopEdge); // Top plane
-			Out_ObjectSpace_Planes[GET1_NUMBER] = FPlane(FVector::ZeroVector, LBottomEdge, RBottomEdge); // Bottom plane
-			Out_ObjectSpace_Planes[GET2_NUMBER] = FPlane(FVector::ZeroVector, RBottomEdge, RTopEdge); // Right plane
-			Out_ObjectSpace_Planes[GET3_NUMBER] = FPlane(FVector::ZeroVector, LTopEdge, LBottomEdge); // Left plane
+			Out_ObjectSpace_Planes[0] = FPlane(FVector::ZeroVector, RTopEdge, LTopEdge); // Top plane
+			Out_ObjectSpace_Planes[1] = FPlane(FVector::ZeroVector, LBottomEdge, RBottomEdge); // Bottom plane
+			Out_ObjectSpace_Planes[2] = FPlane(FVector::ZeroVector, RBottomEdge, RTopEdge); // Right plane
+			Out_ObjectSpace_Planes[3] = FPlane(FVector::ZeroVector, LTopEdge, LBottomEdge); // Left plane
 
-			Out_ObjectSpace_Planes[GET4_NUMBER] = FPlane(Direction * NearClippingPlane, Direction); // Near plane
-			Out_ObjectSpace_Planes[GET5_NUMBER] = FPlane(Direction * FarClippingPlane, -Direction); // Far plane	
+			Out_ObjectSpace_Planes[4] = FPlane(Direction * NearClippingPlane, Direction); // Near plane
+			Out_ObjectSpace_Planes[5] = FPlane(Direction * FarClippingPlane, -Direction); // Far plane	
 		}
 	}
 
@@ -835,14 +751,14 @@ public:
 	 */
 	static FORCEINLINE_DEBUGGABLE bool Point_Intersects_With_Frustum(const FVector& Point,
 	                                                                 const FPlane (&ObjectSpace_PlanesInput)[
-		                                                                 GET6_NUMBER],
+		                                                                 6],
 	                                                                 const FTransform& CameraTransform)
 	{
 		const FVector InversePoint = CameraTransform.InverseTransformPosition(Point);
 
-		for (uint8 p = GET0_NUMBER; p < GET6_NUMBER; ++p)
+		for (uint8 p = 0; p < 6; ++p)
 		{
-			if (ObjectSpace_PlanesInput[p].PlaneDot(InversePoint) < GET0_NUMBER)
+			if (ObjectSpace_PlanesInput[p].PlaneDot(InversePoint) < 0)
 			{
 				return false;
 			}
@@ -861,10 +777,10 @@ public:
 	 * @return true if the box intersects with the camera | false if the box is fully outside the camera view
 	 */
 	static FORCEINLINE_DEBUGGABLE bool Box_Intersects_With_Frustum(const FBox& Box,
-	                                                               const FPlane (&ObjectSpace_PlanesInput)[GET6_NUMBER],
+	                                                               const FPlane (&ObjectSpace_PlanesInput)[6],
 	                                                               const FTransform& CameraTransform,
 	                                                               float IntersectionToleranceRadius =
-		                                                               GET0_NUMBER)
+		                                                               0)
 	{
 		const FVector& CameraLocation = CameraTransform.GetLocation();
 
@@ -893,10 +809,10 @@ public:
 		}
 
 		// Get the verts of the box
-		FVector Verts[GET8_NUMBER];
+		FVector Verts[8];
 		Box.GetVertices(Verts);
 		// Loop through every vert and check if the vert is intersecting with the camera
-		for (uint8 Vert = GET0_NUMBER; Vert < GET8_NUMBER; ++Vert)
+		for (uint8 Vert = 0; Vert < 8; ++Vert)
 		{
 			// When it's intersecting return true
 			if (Point_Intersects_With_Frustum(Verts[Vert], ObjectSpace_PlanesInput, CameraTransform))
@@ -923,16 +839,16 @@ public:
 		YAxis.Normalize();
 
 		// Update the input matrix with the ortho-normalized basis vectors
-		Matrix.SetAxis(GET0_NUMBER, XAxis);
-		Matrix.SetAxis(GET1_NUMBER, YAxis);
-		Matrix.SetAxis(GET2_NUMBER, ZAxis);
+		Matrix.SetAxis(0, XAxis);
+		Matrix.SetAxis(1, YAxis);
+		Matrix.SetAxis(2, ZAxis);
 	}
 
 	static FORCEINLINE_DEBUGGABLE void NormalizeMatrix(FMatrix& Matrix)
 	{
-		Matrix.SetAxis(GET0_NUMBER, Matrix.GetScaledAxis(EAxis::X).GetSafeNormal());
-		Matrix.SetAxis(GET1_NUMBER, Matrix.GetScaledAxis(EAxis::Y).GetSafeNormal());
-		Matrix.SetAxis(GET2_NUMBER, Matrix.GetScaledAxis(EAxis::Z).GetSafeNormal());
+		Matrix.SetAxis(0, Matrix.GetScaledAxis(EAxis::X).GetSafeNormal());
+		Matrix.SetAxis(1, Matrix.GetScaledAxis(EAxis::Y).GetSafeNormal());
+		Matrix.SetAxis(2, Matrix.GetScaledAxis(EAxis::Z).GetSafeNormal());
 	}
 
 	static FORCEINLINE FQuat VectorAccumulateQuaternionShortestPath(const FQuat& A, const FQuat& B)
@@ -986,16 +902,16 @@ public:
 	static FORCEINLINE_DEBUGGABLE uint32 EncodeUInt32ToColor(const FColor& Color)
 	{
 		// return (float)(((int)(Color.x) << 24) | ((int)(Color.y) << 16) | ((int)(Color.z) <<8) | (int)Color.w);
-		return (Color.R << GET24_NUMBER) | (Color.G << GET16_NUMBER) | (Color.B << GET8_NUMBER) | Color.A;
+		return (Color.R << 24) | (Color.G << 16) | (Color.B << 8) | Color.A;
 	}
 
 	static FORCEINLINE_DEBUGGABLE FColor DecodeUInt32ToColor(uint32 Number)
 	{
 		FColor Color;
 
-		Color.R = (Number >> GET24_NUMBER) & 0xFF;
-		Color.G = (Number >> GET16_NUMBER) & 0xFF;
-		Color.B = (Number >> GET8_NUMBER) & 0xFF;
+		Color.R = (Number >> 24) & 0xFF;
+		Color.G = (Number >> 16) & 0xFF;
+		Color.B = (Number >> 8) & 0xFF;
 		Color.A = Number & 0xFF;
 
 		return Color;
@@ -1003,14 +919,14 @@ public:
 
 	static FORCEINLINE_DEBUGGABLE uint16 EncodeUInt16ToUInt8Vector2(const FIntVector2& Int8Vector)
 	{
-		return (Int8Vector.Y << GET8_NUMBER) | Int8Vector.X;
+		return (Int8Vector.Y << 8) | Int8Vector.X;
 	}
 
 	static FORCEINLINE_DEBUGGABLE FIntVector2 DecodeUInt16ToUInt8Vector2(uint16 Number)
 	{
 		FIntVector2 Vector;
 
-		Vector.Y = (Number >> GET8_NUMBER) & 0xFF;
+		Vector.Y = (Number >> 8) & 0xFF;
 		Vector.X = Number & 0xFF;
 
 		return Vector;
@@ -1095,7 +1011,7 @@ public:
 	template <class Key1, class Key2>
 	static FORCEINLINE_DEBUGGABLE uint32 GetDoubleMapKey(const TObjectPtr<Key1>& Asset1, const TObjectPtr<Key2>& Asset2)
 	{
-		uint32 Hash = GET0_NUMBER;
+		uint32 Hash = 0;
 		Hash = HashCombineFast(Hash, GetTypeHash(Asset1));
 		Hash = HashCombineFast(Hash, GetTypeHash(Asset2));
 		return Hash;
@@ -1105,7 +1021,7 @@ public:
 	static FORCEINLINE_DEBUGGABLE uint32 GetTripleMapKey(const TObjectPtr<Key1>& Asset1, const TObjectPtr<Key2>& Asset2,
 	                                                     const TObjectPtr<Key3>& Asset3)
 	{
-		uint32 Hash = GET0_NUMBER;
+		uint32 Hash = 0;
 		Hash = HashCombineFast(Hash, GetTypeHash(Asset1));
 		Hash = HashCombineFast(Hash, GetTypeHash(Asset2));
 		Hash = HashCombineFast(Hash, GetTypeHash(Asset3));
@@ -1115,7 +1031,7 @@ public:
 	template <class T>
 	static FORCEINLINE_DEBUGGABLE uint32 GetArrayHash(const TArray<TObjectPtr<T>>& Assets)
 	{
-		uint32 Hash = GET0_NUMBER;
+		uint32 Hash = 0;
 		for (const TObjectPtr<T>& Element : Assets)
 		{
 			Hash = HashCombineFast(Hash, GetTypeHash(Element));
@@ -1140,7 +1056,7 @@ public:
 	template <class Key, class Value>
 	static FORCEINLINE_DEBUGGABLE uint32 GetDataMapHash(TMap<Key, Value>& Map)
 	{
-		uint32 Hash = GET0_NUMBER;
+		uint32 Hash = 0;
 		for (const TTuple<Key, Value>& Element : Map)
 		{
 			HashDataTypeToHash(Hash, Element.Key);
@@ -1228,8 +1144,8 @@ public:
 			Format,
 			FClearValueBinding::Transparent,
 			TexCreateFlags,
-			GET1_NUMBER,
-			GET1_NUMBER);
+			1,
+			1);
 		// Allocate the texture
 		OutputTextureRef = GraphBuilder.CreateTexture(OutTextureDescription, TextureName);
 		// Create the unordered access view and return it
@@ -1270,7 +1186,7 @@ public:
 			Format,
 			FClearValueBinding::Transparent,
 			TexCreateFlags,
-			Slice, GET1_NUMBER, GET1_NUMBER);
+			Slice, 1, 1);
 
 		OutputTextureRef = GraphBuilder.CreateTexture(OutTextureDescription, TextureName);
 
@@ -1387,7 +1303,7 @@ public:
 		// Get the render target resource
 		const FRenderTarget* RenderTargetResource = Texture.GetRenderTargetResource();
 		// Get the RHI texture from the resource
-		const FTexture2DRHIRef RenderTargetRHI = RenderTargetResource->GetRenderTargetTexture();
+		const FTextureRHIRef RenderTargetRHI = RenderTargetResource->GetRenderTargetTexture();
 		// Create the description of the upload,
 		// here it's important to use TexCreate_RenderTargetable and TexCreate_ShaderResource
 
@@ -1433,7 +1349,7 @@ public:
 		// Get the render target resource
 		const FRenderTarget* RenderTargetResource = Texture.GetRenderTargetResource();
 		// Get the RHI texture from the resource
-		const FTexture2DRHIRef RenderTargetRHI = RenderTargetResource->GetRenderTargetTexture();
+		const FTextureRHIRef RenderTargetRHI = RenderTargetResource->GetRenderTargetTexture();
 		// Create the description of the upload,
 		// here it's important to use TexCreate_RenderTargetable and TexCreate_ShaderResource
 
@@ -1535,7 +1451,7 @@ public:
 	                                                                      FRDGBufferRef& OutputBufferRef)
 	{
 		// Create a default write buffer with 4 floats
-		return TCreateWriteBuffer<float>(GraphBuilder, GET4_NUMBER, TEXT("Debug_R_Buffer_4f"), PF_R32_FLOAT,
+		return TCreateWriteBuffer<float>(GraphBuilder, 4, TEXT("Debug_R_Buffer_4f"), PF_R32_FLOAT,
 		                                 OutputBufferRef);
 	}
 
@@ -1551,7 +1467,7 @@ public:
 		// Create a readback buffer
 		FRHIGPUBufferReadback* GPUBufferReadbackBuffer = new FRHIGPUBufferReadback(TEXT("Debug_R_Buffer_4f_Readback"));
 		// Copy SourceBuffer into GPUBufferReadbackBuffer
-		AddEnqueueCopyPass(GraphBuilder, GPUBufferReadbackBuffer, SourceBuffer, GET0_NUMBER);
+		AddEnqueueCopyPass(GraphBuilder, GPUBufferReadbackBuffer, SourceBuffer, 0);
 
 		// Declare the runner function
 		auto RunnerFunction = [GPUBufferReadbackBuffer, AsyncCallback](auto&& RunnerFunction_Internal) -> void
@@ -1560,9 +1476,9 @@ public:
 			if (GPUBufferReadbackBuffer->IsReady())
 			{
 				// Lock the GPUBufferReadbackBuffer which gives us the output buffer
-				const float* Buffer = static_cast<float*>(GPUBufferReadbackBuffer->Lock(GET1_NUMBER));
+				const float* Buffer = static_cast<float*>(GPUBufferReadbackBuffer->Lock(1));
 				// Assign the 4 floats into a FVector4f
-				FVector4f OutValue(Buffer[GET0_NUMBER], Buffer[GET1_NUMBER], Buffer[GET2_NUMBER], Buffer[GET3_NUMBER]);
+				FVector4f OutValue(Buffer[0], Buffer[1], Buffer[2], Buffer[3]);
 
 				// Unlock the buffer to not freeze the thread
 				GPUBufferReadbackBuffer->Unlock();
@@ -1622,7 +1538,7 @@ public:
 					Lock(DataInput.Num() * sizeof(float)));
 
 				int32 NumData = DataInput.Num();
-				for (int32 i = GET0_NUMBER; i < NumData; ++i)
+				for (int32 i = 0; i < NumData; ++i)
 				{
 					DataInput[i] = Buffer[i];
 				}
@@ -1893,7 +1809,7 @@ public:
 					TArray<FFloat16Color> DestinationArray; // The destination TArray
 
 					const int32 DstMipSize = CalculateImageBytes(Texture->GetSizeX(), Texture->GetSizeY(),
-					                                             GET1_NUMBER, PF_FloatRGBA);
+					                                             1, PF_FloatRGBA);
 
 					// Resize the destination array to accommodate the copied data
 					DestinationArray.SetNumZeroed(
@@ -1901,15 +1817,15 @@ public:
 							static_cast<float>(DstMipSize) / static_cast<float>(sizeof(FFloat16Color))));
 
 					// Copy data from the source memory buffer to the destination array
-					uint8* SliceData = Texture->Source.LockMip(GET0_NUMBER);
+					uint8* SliceData = Texture->Source.LockMip(0);
 
 					FMemory::Memcpy(DestinationArray.GetData(), SliceData, DstMipSize);
 
-					Texture->Source.UnlockMip(GET0_NUMBER);
+					Texture->Source.UnlockMip(0);
 
 					bool bValidPixels = false;
 					int32 NumData = DestinationArray.Num();
-					for (int32 i = GET0_NUMBER; i < NumData; ++i)
+					for (int32 i = 0; i < NumData; ++i)
 					{
 						const FFloat16Color& Color = DestinationArray[i];
 

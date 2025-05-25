@@ -49,7 +49,8 @@ public class TurboSequence_Lf : ModuleRules
 				"RenderCore",
 				"Renderer",
 				"RHI",
-				"MeshDescription"
+				"MeshDescription",
+				"NiagaraVertexFactories"
 				// ... add private dependencies that you statically link with here ...	
 			}
 		);

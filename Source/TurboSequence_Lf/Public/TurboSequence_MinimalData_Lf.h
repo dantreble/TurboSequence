@@ -35,23 +35,6 @@ enum class ETurboSequence_ManagementMode_Lf : uint8
 	SelfManaged
 };
 
-UENUM(BlueprintType)
-enum class ETurboSequence_IsVisibleOverride_Lf : uint8
-{
-	Default,
-	IsVisible,
-	IsNotVisible,
-	ScaleToZero
-};
-
-UENUM(BlueprintType)
-enum class ETurboSequence_IsAnimatedOverride_Lf : uint8
-{
-	Default,
-	IsAnimated,
-	IsNotAnimated
-};
-
 UCLASS(BlueprintType)
 class TURBOSEQUENCE_LF_API UTurboSequence_ThreadContext_Lf : public UObject
 {
@@ -78,39 +61,149 @@ struct TURBOSEQUENCE_LF_API FTurboSequence_BoneLayer_Lf
 {
 	GENERATED_BODY()
 
-	FTurboSequence_BoneLayer_Lf()
-	{
-	}
-
-	~FTurboSequence_BoneLayer_Lf()
-	{
-	}
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FName BoneLayerName = FName();
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	uint8 BoneDepth = GET2_NUMBER;
+	uint8 BoneDepth = 2;
+};
+
+
+struct FBoneMaskSourceHandle
+{
+	bool operator==(const FBoneMaskSourceHandle& LayerMaskHandle) const = default;
+	bool operator!=(const FBoneMaskSourceHandle& LayerMaskHandle) const = default;
+	
+	uint32 Hash = 0;
+};
+
+FORCEINLINE uint32 GetTypeHash(const FBoneMaskSourceHandle& BoneMaskSourceHandle)
+{
+	return BoneMaskSourceHandle.Hash;
+}
+
+struct FBoneMaskBuiltProxyHandle
+{
+	bool operator==(const FBoneMaskBuiltProxyHandle& LayerMaskHandle) const = default;
+	bool operator!=(const FBoneMaskBuiltProxyHandle& LayerMaskHandle) const = default;
+	
+	uint32 Hash = 0;
+};
+
+FORCEINLINE uint32 GetTypeHash(const FBoneMaskBuiltProxyHandle& BoneMaskSourceHandle)
+{
+	return BoneMaskSourceHandle.Hash;
+}
+
+USTRUCT(BlueprintType)
+struct FBaseSkeletalMeshHandle
+{
+	GENERATED_BODY()
+
+	FBaseSkeletalMeshHandle() : MeshID(INDEX_NONE), AttachmentID(0) {}
+
+	explicit FBaseSkeletalMeshHandle(const int32 InMeshID) : MeshID(InMeshID), AttachmentID(0) {}
+
+	union
+	{
+		struct 
+		{
+			int32 MeshID : 24;
+			int32 AttachmentID : 8; //Always 0
+		};
+
+		int32 ID;
+	};
+
+	bool IsValid() const { return MeshID != INDEX_NONE; }
+	
+	friend uint32 GetTypeHash(const FBaseSkeletalMeshHandle& TurboSequenceMeshHandle);
+
+	friend bool operator==(const FBaseSkeletalMeshHandle& Lhs, const FBaseSkeletalMeshHandle& RHS)
+	{
+		return Lhs.ID == RHS.ID;
+	}
+
+	friend bool operator!=(const FBaseSkeletalMeshHandle& Lhs, const FBaseSkeletalMeshHandle& RHS)
+	{
+		return !(Lhs == RHS);
+	}
+};
+
+#if UE_BUILD_DEBUG
+uint32 GetTypeHash(const FTurboSequenceMeshHandle& TurboSequenceMeshHandle);
+#else // optimize by inlining in shipping and development builds
+FORCEINLINE uint32 GetTypeHash(const FBaseSkeletalMeshHandle& TurboSequenceMeshHandle)
+{
+	return GetTypeHash(TurboSequenceMeshHandle.ID);
+}
+#endif
+
+USTRUCT(BlueprintType)
+struct FAttachmentMeshHandle : public FBaseSkeletalMeshHandle
+{
+	GENERATED_BODY()
+
+	FAttachmentMeshHandle()
+	{
+		MeshID = -1;
+		AttachmentID = 0; 
+	}
+
+	FAttachmentMeshHandle(const FBaseSkeletalMeshHandle BaseHandle)
+	{
+		MeshID = BaseHandle.MeshID;
+	}
+
+	explicit FAttachmentMeshHandle(const FBaseSkeletalMeshHandle BaseHandle, int32 InAttachmentID)
+	{
+		MeshID = BaseHandle.MeshID;
+		AttachmentID = InAttachmentID;
+	}
+
+	FBaseSkeletalMeshHandle GetBaseHandle() const { return FBaseSkeletalMeshHandle(MeshID); }
+	
+	friend bool operator==(const FAttachmentMeshHandle& Lhs, const FAttachmentMeshHandle& RHS) = default;
+	friend bool operator!=(const FAttachmentMeshHandle& Lhs, const FAttachmentMeshHandle& RHS) = default;
+	friend uint32 GetTypeHash(const FAttachmentMeshHandle& AttachmentMeshHandle);
+};
+
+#if UE_BUILD_DEBUG
+uint32 GetTypeHash(const FAttachmentMeshHandle& TurboSequenceMeshHandle);
+#else // optimize by inlining in shipping and development builds
+FORCEINLINE uint32 GetTypeHash(const FAttachmentMeshHandle& AttachmentMeshHandle)
+{
+	return GetTypeHash(AttachmentMeshHandle.ID);
+}
+#endif
+
+
+USTRUCT(BlueprintType)
+struct FTurboSequence_MaskDefinition
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	TArray<FTurboSequence_BoneLayer_Lf> BoneLayerMasks;
+
+	FBoneMaskSourceHandle GetHandle() const;
+
+	FBoneMaskBuiltProxyHandle GetBuiltProxyHandle(UTurboSequence_MeshAsset_Lf *DataAsset) const; 
 };
 
 USTRUCT(BlueprintType)
 struct TURBOSEQUENCE_LF_API FTurboSequence_AnimPlaySettings_Lf
 {
 	GENERATED_BODY()
-
-	FTurboSequence_AnimPlaySettings_Lf()
-	{
-	}
-
-	~FTurboSequence_AnimPlaySettings_Lf()
-	{
-	}
-
+	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	TArray<FTurboSequence_BoneLayer_Lf> BoneLayerMasks;
+	FTurboSequence_MaskDefinition MaskDefinition;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	bool bAnimationTimeSelfManaged = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	bool bNormalizeWeightInGroup = true;		//Layering a masked animation over the top, I don't want its weight normalised, I want it to be able to fade in/out 		
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float AnimationWeight = 1.0f;
@@ -125,7 +218,7 @@ struct TURBOSEQUENCE_LF_API FTurboSequence_AnimPlaySettings_Lf
 	ETurboSequence_AnimationForceMode_Lf ForceMode = ETurboSequence_AnimationForceMode_Lf::None;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	float StartTransitionTimeInSeconds = GET1_NUMBER;
+	float StartTransitionTimeInSeconds = 0.25f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float EndTransitionTimeInSeconds = 0.25f;
@@ -137,13 +230,47 @@ struct TURBOSEQUENCE_LF_API FTurboSequence_AnimPlaySettings_Lf
 	ETurboSequence_ManagementMode_Lf AnimationManagementMode = ETurboSequence_ManagementMode_Lf::Auto;
 };
 
+
+struct FAnimationMetaDataHandle
+{
+	FAnimationMetaDataHandle() = default;
+
+	explicit FAnimationMetaDataHandle(const uint32 InAnimationID) { this->AnimationID = InAnimationID; }
+	
+	friend bool operator==(const FAnimationMetaDataHandle& Lhs, const FAnimationMetaDataHandle& RHS)
+	{
+		return Lhs.AnimationID == RHS.AnimationID;
+	}
+
+	friend bool operator!=(const FAnimationMetaDataHandle& Lhs, const FAnimationMetaDataHandle& RHS)
+	{
+		return !(Lhs == RHS);
+	}
+
+	
+	uint32 AnimationID = 0; //Unique id within the SkinnedMeshRuntime that owns it
+};
+
+#if UE_BUILD_DEBUG
+uint32 GetTypeHash(const FAnimationMetaDataHandle& AnimationMetaDataHandle);
+#else // optimize by inlining in shipping and development builds
+FORCEINLINE uint32 GetTypeHash(const FAnimationMetaDataHandle& AnimationMetaDataHandle)
+{
+	return AnimationMetaDataHandle.AnimationID;
+}
+#endif
+
 //
 USTRUCT(BlueprintType)
 struct TURBOSEQUENCE_LF_API FTurboSequence_AnimMinimalData_Lf
 {
 	GENERATED_BODY()
 
-	FTurboSequence_AnimMinimalData_Lf()
+	FTurboSequence_AnimMinimalData_Lf() {}
+
+	FTurboSequence_AnimMinimalData_Lf(const FAnimationMetaDataHandle& AnimationID, FBaseSkeletalMeshHandle BelongsToMeshID)
+		: AnimationID(AnimationID),
+		  BelongsToMeshID(BelongsToMeshID)
 	{
 	}
 
@@ -152,12 +279,19 @@ struct TURBOSEQUENCE_LF_API FTurboSequence_AnimMinimalData_Lf
 		bIsValid = bValid;
 	}
 
-	~FTurboSequence_AnimMinimalData_Lf()
+	friend bool operator==(const FTurboSequence_AnimMinimalData_Lf& Lhs, const FTurboSequence_AnimMinimalData_Lf& RHS)
 	{
+		return Lhs.AnimationID == RHS.AnimationID
+			&& Lhs.BelongsToMeshID == RHS.BelongsToMeshID;
 	}
 
-	uint32 AnimationID = GET0_NUMBER;
-	int32 BelongsToMeshID = GET0_NUMBER;
+	friend bool operator!=(const FTurboSequence_AnimMinimalData_Lf& Lhs, const FTurboSequence_AnimMinimalData_Lf& RHS)
+	{
+		return !(Lhs == RHS);
+	}
+	
+	FAnimationMetaDataHandle AnimationID;
+	FBaseSkeletalMeshHandle BelongsToMeshID;
 
 protected:
 	bool bIsValid = false;
@@ -169,56 +303,22 @@ public:
 	}
 };
 
-
-USTRUCT(BlueprintType)
-struct TURBOSEQUENCE_LF_API FTurboSequence_AnimMinimalCollection_Lf
+#if UE_BUILD_DEBUG
+uint32 GetTypeHash(const FTurboSequence_AnimMinimalData_Lf& AnimMinimalData);
+#else // optimize by inlining in shipping and development builds
+FORCEINLINE uint32 GetTypeHash(const FTurboSequence_AnimMinimalData_Lf& AnimMinimalData)
 {
-	GENERATED_BODY()
-
-	FTurboSequence_AnimMinimalCollection_Lf()
-	{
-	}
-
-	~FTurboSequence_AnimMinimalCollection_Lf()
-	{
-	}
-
-	explicit FTurboSequence_AnimMinimalCollection_Lf(bool bValid)
-	{
-		bIsValid = bValid;
-	}
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	FTurboSequence_AnimMinimalData_Lf RootMotionMesh;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	TArray<FTurboSequence_AnimMinimalData_Lf> CustomizableMeshes;
-
-protected:
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	bool bIsValid = false;
-
-public:
-	FORCEINLINE bool IsAnimCollectionValid() const
-	{
-		return bIsValid;
-	}
-};
-
+	return HashCombine(::GetTypeHash(AnimMinimalData.AnimationID),::GetTypeHash(AnimMinimalData.BelongsToMeshID) );
+}
+#endif
 
 USTRUCT(BlueprintType)
 struct TURBOSEQUENCE_LF_API FTurboSequence_AnimMinimalBlendSpace_Lf
 {
 	GENERATED_BODY()
 
-	FTurboSequence_AnimMinimalBlendSpace_Lf()
-	{
-	}
-
-	~FTurboSequence_AnimMinimalBlendSpace_Lf()
-	{
-	}
-
+	FTurboSequence_AnimMinimalBlendSpace_Lf() {}
+	
 	explicit FTurboSequence_AnimMinimalBlendSpace_Lf(bool bValid)
 	{
 		bIsValid = bValid;
@@ -231,7 +331,7 @@ struct TURBOSEQUENCE_LF_API FTurboSequence_AnimMinimalBlendSpace_Lf
 	TObjectPtr<UBlendSpace> BlendSpace;
 
 	UPROPERTY(EditAnywhere)
-	int32 BelongsToMeshID = GET0_NUMBER;
+	FBaseSkeletalMeshHandle BelongsToMeshID;
 
 protected:
 	UPROPERTY(VisibleAnywhere)
@@ -239,41 +339,6 @@ protected:
 
 public:
 	FORCEINLINE bool IsAnimBlendSpaceValid() const
-	{
-		return bIsValid;
-	}
-};
-
-USTRUCT(BlueprintType)
-struct TURBOSEQUENCE_LF_API FTurboSequence_AnimMinimalBlendSpaceCollection_Lf
-{
-	GENERATED_BODY()
-
-	FTurboSequence_AnimMinimalBlendSpaceCollection_Lf()
-	{
-	}
-
-	~FTurboSequence_AnimMinimalBlendSpaceCollection_Lf()
-	{
-	}
-
-	explicit FTurboSequence_AnimMinimalBlendSpaceCollection_Lf(bool bValid)
-	{
-		bIsValid = bValid;
-	}
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	FTurboSequence_AnimMinimalBlendSpace_Lf RootMotionMesh;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	TArray<FTurboSequence_AnimMinimalBlendSpace_Lf> CustomizableMeshes;
-
-protected:
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	bool bIsValid = false;
-
-public:
-	FORCEINLINE bool IsAnimCollectionValid() const
 	{
 		return bIsValid;
 	}
@@ -290,167 +355,23 @@ struct TURBOSEQUENCE_LF_API FTurboSequence_MeshMetaData_Lf
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	TArray<TObjectPtr<UMaterialInterface>> OverrideMaterials;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	TObjectPtr<class UTurboSequence_FootprintAsset_Lf> FootprintAsset;
 };
-
-USTRUCT(BlueprintType)
-struct TURBOSEQUENCE_LF_API FTurboSequence_MeshSpawnData_Lf
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	FTurboSequence_MeshMetaData_Lf RootMotionMesh;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	TArray<FTurboSequence_MeshMetaData_Lf> CustomizableMeshes;
-
-	uint32 GetHash() const // TODO: Make GET and SET to assign the the hash only when values are changing
-	{
-		uint32 Hash = GET0_NUMBER;
-
-		Hash = HashCombineFast(GetTypeHash(RootMotionMesh.Mesh), Hash);
-		for (const TObjectPtr<UMaterialInterface>& OverrideMaterial : RootMotionMesh.OverrideMaterials)
-		{
-			Hash = HashCombineFast(GetTypeHash(OverrideMaterial), Hash);
-		}
-		Hash = HashCombineFast(GetTypeHash(RootMotionMesh.FootprintAsset), Hash);
-
-		for (const FTurboSequence_MeshMetaData_Lf& CustomizableMeshMeta : CustomizableMeshes)
-		{
-			Hash = HashCombineFast(GetTypeHash(CustomizableMeshMeta.Mesh), Hash);
-			for (const TObjectPtr<UMaterialInterface>& OverrideMaterial : CustomizableMeshMeta.OverrideMaterials)
-			{
-				Hash = HashCombineFast(GetTypeHash(OverrideMaterial), Hash);
-			}
-			Hash = HashCombineFast(GetTypeHash(CustomizableMeshMeta.FootprintAsset), Hash);
-		}
-
-		return Hash;
-	}
-
-	FORCEINLINE bool operator==(const FTurboSequence_MeshSpawnData_Lf& Other) const
-	{
-		return Equals(Other);
-	}
-
-	FORCEINLINE bool operator!=(const FTurboSequence_MeshSpawnData_Lf& Other) const
-	{
-		return !Equals(Other);
-	}
-
-	FORCEINLINE bool Equals(const FTurboSequence_MeshSpawnData_Lf& Other) const
-	{
-		return GetHash() == Other.GetHash();
-	}
-
-	FORCEINLINE bool IsSpawnDataValid() const
-	{
-		return IsValid(RootMotionMesh.Mesh);
-	}
-};
-#if UE_BUILD_DEBUG
-uint32 GetTypeHash(const FTurboSequence_MeshSpawnData_Lf& MetaData);
-#else // optimize by inlining in shipping and development builds
-FORCEINLINE_DEBUGGABLE uint32 GetTypeHash(const FTurboSequence_MeshSpawnData_Lf& MetaData)
-{
-	return MetaData.GetHash();
-}
-#endif
-
-USTRUCT(BlueprintType)
-struct TURBOSEQUENCE_LF_API FTurboSequence_MinimalMeshData_Lf
-{
-	GENERATED_BODY()
-
-	FTurboSequence_MinimalMeshData_Lf()
-	{
-	}
-
-	~FTurboSequence_MinimalMeshData_Lf()
-	{
-	}
-
-	explicit FTurboSequence_MinimalMeshData_Lf(bool bValid)
-	{
-		bIsValid = bValid;
-	}
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	int32 RootMotionMeshID = GET0_NUMBER;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	TArray<int32> CustomizableMeshIDs;
-
-protected:
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	bool bIsValid = false;
-
-public:
-	FORCEINLINE bool IsMeshDataValid() const
-	{
-		return bIsValid && RootMotionMeshID > INDEX_NONE;
-	}
-
-	FORCEINLINE bool operator==(const FTurboSequence_MinimalMeshData_Lf& Other) const
-	{
-		return Equals(Other);
-	}
-
-	FORCEINLINE bool operator!=(const FTurboSequence_MinimalMeshData_Lf& Other) const
-	{
-		return !Equals(Other);
-	}
-
-	FORCEINLINE bool Equals(const FTurboSequence_MinimalMeshData_Lf& Other) const
-	{
-		return RootMotionMeshID == Other.RootMotionMeshID;
-	}
-
-	FORCEINLINE FString ToString() const
-	{
-		FString String = FString::Printf(
-			TEXT("bIsValid -> %s | Root Mesh ID -> %d"), IsMeshDataValid() ? TEXT("True") : TEXT("False"),
-			RootMotionMeshID);
-		for (int32 MeshID : CustomizableMeshIDs)
-		{
-			String += FString::Printf(TEXT(" | Customizable ID -> %d"), MeshID);
-		}
-		return String;
-	}
-};
-#if UE_BUILD_DEBUG
-uint32 GetTypeHash(const FTurboSequence_MinimalMeshData_Lf& MeshData);
-#else // optimize by inlining in shipping and development builds
-FORCEINLINE_DEBUGGABLE uint32 GetTypeHash(const FTurboSequence_MinimalMeshData_Lf& MeshData)
-{
-	return MeshData.RootMotionMeshID;
-}
-#endif
-
 
 USTRUCT(BlueprintType)
 struct TURBOSEQUENCE_LF_API FTurboSequence_PoseCurveData_Lf
 {
 	GENERATED_BODY()
 
-	FTurboSequence_PoseCurveData_Lf()
-	{
-	}
-
+	FTurboSequence_PoseCurveData_Lf() = default;
+	
 	FTurboSequence_PoseCurveData_Lf(const TObjectPtr<UAnimSequence>& CurveAnimation, const FName& CurveID,
-	                                float CurveFrame0)
+	                                const float CurveFrame0)
 		: CurveAnimation(CurveAnimation),
 		  CurveName(CurveID),
 		  CurveFrame_0(CurveFrame0)
 	{
 	}
-
-	~FTurboSequence_PoseCurveData_Lf()
-	{
-	}
-
+	
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
 	TObjectPtr<UAnimSequence> CurveAnimation = nullptr;
 
@@ -458,7 +379,7 @@ struct TURBOSEQUENCE_LF_API FTurboSequence_PoseCurveData_Lf
 	FName CurveName = FName("");
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	float CurveFrame_0 = GET0_NUMBER;
+	float CurveFrame_0 = 0;
 
 	FORCEINLINE bool IsCurveValid() const
 	{
@@ -481,16 +402,10 @@ struct TURBOSEQUENCE_LF_API FTurboSequence_UpdateGroup_Lf
 	GENERATED_BODY()
 
 	UPROPERTY(VisibleAnywhere)
-	TArray<int32> RawIDs;
+	TArray<FBaseSkeletalMeshHandle> RawIDs;
 
 	UPROPERTY(VisibleAnywhere)
-	TMap<int32, int32> RawIDData;
-
-	UPROPERTY(VisibleAnywhere)
-	TMap<FTurboSequence_MinimalMeshData_Lf, FIntVector2> MeshIDToMinimal;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	TArray<FTurboSequence_MinimalMeshData_Lf> RawMinimalData;
+	TMap<FBaseSkeletalMeshHandle, int32> RawIDData;
 };
 
 USTRUCT(BlueprintType)
@@ -498,19 +413,53 @@ struct TURBOSEQUENCE_LF_API FTurboSequence_UpdateContext_Lf
 {
 	GENERATED_BODY()
 
-	FTurboSequence_UpdateContext_Lf()
-	{
-	}
-
-	~FTurboSequence_UpdateContext_Lf()
-	{
-	}
-
+	FTurboSequence_UpdateContext_Lf() {}
+	
 	FTurboSequence_UpdateContext_Lf(const int32 GroupIndex)
 		: GroupIndex(GroupIndex)
 	{
 	}
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	int32 GroupIndex = GET0_NUMBER;
+	int32 GroupIndex = 0;
+};
+
+USTRUCT()
+struct TURBOSEQUENCE_LF_API FTurboSequence_AnimNotifyQueue_Lf
+{
+	GENERATED_BODY()
+
+	FTurboSequence_AnimNotifyQueue_Lf()
+	{
+		RandomStream.Initialize(0x05629063);
+	}
+
+	/** Work out whether this notify should be triggered based on its chance of triggering value */
+	bool PassesChanceOfTriggering(const FAnimNotifyEvent* Event) const;
+
+	/** Add notify to queue*/
+	void AddAnimNotify(const FAnimNotifyEvent* Notify, const UObject* NotifySource);
+
+	/** Add anim notifies **/
+	void AddAnimNotifies(bool bSrcIsLeader, const TArray<FAnimNotifyEventReference>& NewNotifies, const float InstanceWeight);
+
+	/** Wrapper functions for when we aren't coming from a sync group **/
+	void AddAnimNotifies(const TArray<FAnimNotifyEventReference>& NewNotifies, const float InstanceWeight) { AddAnimNotifies(true, NewNotifies, InstanceWeight); }
+
+	/** Reset queue & update LOD level */
+	void Reset(USkeletalMeshComponent* Component);
+
+	/** Internal random stream */
+	FRandomStream RandomStream;
+
+	/** Animation Notifies that has been triggered in the latest tick **/
+	UPROPERTY(transient)
+	TArray<FAnimNotifyEventReference> AnimNotifies;
+
+private:
+	/** Implementation for adding notifies*/
+	void AddAnimNotifiesToDest(bool bSrcIsLeader, const TArray<FAnimNotifyEventReference>& NewNotifies, TArray<FAnimNotifyEventReference>& DestArray, const float InstanceWeight);
+
+	/** Adds the contents of the NewNotifies array to the DestArray (maintaining uniqueness of notify states*/
+	void AddAnimNotifiesToDestNoFiltering(const TArray<FAnimNotifyEventReference>& NewNotifies, TArray<FAnimNotifyEventReference>& DestArray) const;
 };

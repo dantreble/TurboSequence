@@ -73,13 +73,10 @@ void FMeshUnit_Compute_Shader_Execute_Lf::DispatchRenderThread(
 			RHICmdList,
 			FRDGEventName(
 				*FTurboSequence_Helper_Lf::FormatDebugName(FTurboSequence_BoneTransform_CS_Lf::GraphName,
-				                                           Params.ShaderID)), ERDGBuilderFlags::AllowParallelExecute);
+				                                           Params.ShaderID)), ERDGBuilderFlags::Parallel);
 
 
 		const FTurboSequence_BoneTransform_CS_Lf::FPermutationDomain PermutationVector;
-
-		FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(FTurboSequence_BoneTransform_CS_Lf::NumThreads,
-		                                                           FComputeShaderUtils::kGolden2DGroupSize);
 
 		TShaderMapRef<FTurboSequence_BoneTransform_CS_Lf> MeshUnitComputeShader(
 			GetGlobalShaderMap(GMaxRHIFeatureLevel), PermutationVector);
@@ -169,16 +166,8 @@ void FMeshUnit_Compute_Shader_Execute_Lf::DispatchRenderThread(
 		MeshUnitPassParameters->AnimTextureSizeX = Params.AnimationLibraryTexture->SizeX;
 		MeshUnitPassParameters->AnimTextureSizeY = Params.AnimationLibraryTexture->SizeY;
 
-		MeshUnitPassParameters->NumLevelOfDetails = Params.NumMaxLevelOfDetails;
 		MeshUnitPassParameters->NumCPUBones = Params.NumMaxCPUBones;
-		MeshUnitPassParameters->NumFirstGPUBones = Params.NumMaxGPUBones;
-		int32 NumMeshesPerThread = FMath::CeilToInt32(
-			static_cast<float>(Params.NumMeshes) / static_cast<float>(FTurboSequence_BoneTransform_CS_Lf::NumThreads.X *
-				FTurboSequence_BoneTransform_CS_Lf::NumThreads.Y * FTurboSequence_BoneTransform_CS_Lf::NumThreads.Z));
-		MeshUnitPassParameters->NumMeshesPerThread = NumMeshesPerThread;
 		MeshUnitPassParameters->NumMeshesPerFrame = Params.NumMeshes;
-		MeshUnitPassParameters->NumPixelBuffer = FTurboSequence_Helper_Lf::NumGPUTextureBoneBuffer;
-		MeshUnitPassParameters->NumCustomStates = FTurboSequence_Helper_Lf::NumCustomStates;
 
 		MeshUnitPassParameters->PerMeshCustomDataIndices_StructuredBuffer =
 			FTurboSequence_Helper_Lf::TCreateStructuredReadBufferFromTArray_Custom_Out(
@@ -186,11 +175,6 @@ void FMeshUnit_Compute_Shader_Execute_Lf::DispatchRenderThread(
 				*FTurboSequence_Helper_Lf::FormatDebugName(
 					FTurboSequence_BoneTransform_CS_Lf::CustomDataIndicesDebugName, Params.ShaderID), PF_R32_SINT,
 				true);
-		MeshUnitPassParameters->PerMeshCustomDataLod_StructuredBuffer =
-			FTurboSequence_Helper_Lf::TCreateStructuredReadBufferFromTArray_Custom_Out(
-				GraphBuilder, Params.PerMeshCustomDataLod_RenderThread,
-				*FTurboSequence_Helper_Lf::FormatDebugName(FTurboSequence_BoneTransform_CS_Lf::CustomDataLodDebugName,
-				                                           Params.ShaderID), PF_R16_SINT, true);
 		MeshUnitPassParameters->PerMeshCustomDataCollectionIndex_StructuredBuffer =
 			FTurboSequence_Helper_Lf::TCreateStructuredReadBufferFromTArray_Custom_Out(
 				GraphBuilder, Params.PerMeshCustomDataCollectionIndex_RenderThread,
@@ -249,7 +233,7 @@ void FMeshUnit_Compute_Shader_Execute_Lf::DispatchRenderThread(
 		if (!Params.AnimationLayers_RenderThread.Num())
 		{
 			TArray<int32> Layers;
-			Layers.Add(GET0_NUMBER);
+			Layers.Add(0);
 			MeshUnitPassParameters->AnimationLayerLibrary_StructuredBuffer =
 				FTurboSequence_Helper_Lf::TCreateStructuredReadBufferFromTArray_Custom_Out(
 					GraphBuilder, Layers,
@@ -266,24 +250,27 @@ void FMeshUnit_Compute_Shader_Execute_Lf::DispatchRenderThread(
 						FTurboSequence_BoneTransform_CS_Lf::AnimationLayersDebugName, Params.ShaderID), PF_R16_UINT,
 					true);
 		}
-
+		
 		MeshUnitPassParameters->BoneSpaceAnimationInput_StructuredBuffer =
 			FTurboSequence_Helper_Lf::CreateStructuredReadBufferFromTArray_Half4_Out(
 				GraphBuilder, Params.BoneSpaceAnimationIKInput_RenderThread,
 				*FTurboSequence_Helper_Lf::FormatDebugName(
 					FTurboSequence_BoneTransform_CS_Lf::BoneSpaceAnimationIKInputDebugName, Params.ShaderID), true);
+	
 		MeshUnitPassParameters->BoneSpaceAnimationDataInput_StructuredBuffer =
 			FTurboSequence_Helper_Lf::TCreateStructuredReadBufferFromTArray_Custom_Out(
 				GraphBuilder, Params.BoneSpaceAnimationIKData_RenderThread,
 				*FTurboSequence_Helper_Lf::FormatDebugName(
 					FTurboSequence_BoneTransform_CS_Lf::BoneSpaceAnimationIKDataInputDebugName, Params.ShaderID),
 				PF_R16_SINT, true);
+		
 		MeshUnitPassParameters->BoneSpaceAnimationDataStartIndex_StructuredBuffer =
 			FTurboSequence_Helper_Lf::TCreateStructuredReadBufferFromTArray_Custom_Out(
 				GraphBuilder, Params.BoneSpaceAnimationIKStartIndex_RenderThread,
 				*FTurboSequence_Helper_Lf::FormatDebugName(
 					FTurboSequence_BoneTransform_CS_Lf::BoneSpaceAnimationIKDataStartIndexInputDebugName,
 					Params.ShaderID), PF_R32_SINT, true);
+
 		MeshUnitPassParameters->BoneSpaceAnimationDataEndIndex_StructuredBuffer =
 			FTurboSequence_Helper_Lf::TCreateStructuredReadBufferFromTArray_Custom_Out(
 				GraphBuilder, Params.BoneSpaceAnimationIKEndIndex_RenderThread,
@@ -317,6 +304,7 @@ void FMeshUnit_Compute_Shader_Execute_Lf::DispatchRenderThread(
 		AddCopyTexturePass(GraphBuilder, RenderTargetAnimationOutputPreviousFrameTexture,
 		                   AnimationOutputTexturePeviousRef, AnimationRenderTargetCopyInfo);
 
+		const FIntVector GroupCount = FIntVector(FMath::DivideAndRoundUp(Params.NumMeshes, FTurboSequence_BoneTransform_CS_Lf::NumThreads.X), 1, 1);
 
 		GraphBuilder.AddPass(
 			RDG_EVENT_NAME("TurboSequence_Execute_Writing_Transform_Texture %d", Params.ShaderID),
@@ -334,10 +322,12 @@ void FMeshUnit_Compute_Shader_Execute_Lf::DispatchRenderThread(
 		AddCopyTexturePass(GraphBuilder, AnimationOutputTexturePeviousRef,
 		                   RenderTargetAnimationOutputPreviousFrameTexture, AnimationRenderTargetCopyInfo);
 
-		if (Params.NumDebugData > GET0_NUMBER)
+#if TURBO_SEQUENCE_DEBUG_GPU_READBACK
+		if (Params.NumDebugData > 0)
 		{
 			FTurboSequence_Helper_Lf::CallbackDebugValues(GraphBuilder, OutputDebugBufferRef, DebugData, AsyncCallback);
 		}
+#endif
 
 		// Execute the graph
 		GraphBuilder.Execute();
@@ -374,7 +364,7 @@ void FSettingsCompute_Shader_Execute_Lf::DispatchRenderThread(
 		RHICmdList,
 		FRDGEventName(
 			*FTurboSequence_Helper_Lf::FormatDebugName(FTurboSequence_Settings_CS_Lf::GraphName, Params.ShaderID)),
-		ERDGBuilderFlags::AllowParallelExecute);
+		ERDGBuilderFlags::Parallel);
 
 	const FTurboSequence_Settings_CS_Lf::FPermutationDomain PermutationVector;
 
@@ -386,7 +376,7 @@ void FSettingsCompute_Shader_Execute_Lf::DispatchRenderThread(
 
 	FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(
 		FIntVector(FTurboSequence_Settings_CS_Lf::NumThreads.X, FTurboSequence_Settings_CS_Lf::NumThreads.Y,
-		           GET1_NUMBER), FComputeShaderUtils::kGolden2DGroupSize);
+		           1), FComputeShaderUtils::kGolden2DGroupSize);
 
 	FRDGTextureRef SettingOutputTextureRef;
 	if (Params.bUse32BitTexture)
@@ -423,9 +413,9 @@ void FSettingsCompute_Shader_Execute_Lf::DispatchRenderThread(
 		uint16 NumSlicesWritten = FMath::Min(
 			FMath::CeilToInt(
 				static_cast<float>((Params.AdditiveWriteBaseIndex + Params.SettingsInput.Num()) / (OutputTexture->SizeX
-					* OutputTexture->SizeY))) + GET1_NUMBER, 1024);
+					* OutputTexture->SizeY))) + 1, 1024);
 
-		if (NumSlicesWritten >= OutputTexture->Slices)
+		if (NumSlicesWritten > OutputTexture->Slices)
 		{
 			UE_LOG(LogTurboSequence_Lf, Warning,
 			       TEXT(
@@ -435,7 +425,7 @@ void FSettingsCompute_Shader_Execute_Lf::DispatchRenderThread(
 	}
 	else
 	{
-		PassParameters->BaseIndex = GET0_NUMBER;
+		PassParameters->BaseIndex = 0;
 	}
 
 	const FRDGTextureRef RenderTargetOutputTexture = GraphBuilder.RegisterExternalTexture(

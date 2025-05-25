@@ -3,7 +3,6 @@
 
 #include "TurboSequence_NiagaraSettings_Lf.h"
 
-#include "TurboSequence_ControlWidget_Lf.h"
 #include "TurboSequence_Editor_Lf.h"
 
 #define LOCTEXT_NAMESPACE "TurboSequence Lf Niagara Settings"
@@ -54,9 +53,9 @@ void UTurboSequence_NiagaraSettings_Lf::PostEditChangeProperty(FPropertyChangedE
 		return;
 	}
 
-	bool bEditedData = false;
 	if (IsValid(FTurboSequence_Editor_LfModule::GlobalData))
 	{
+		bool bEditedData = false;
 		if (NameNiagaraEmitter != FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraEmitter.ToString())
 		{
 			bEditedData = true;
@@ -98,12 +97,12 @@ void UTurboSequence_NiagaraSettings_Lf::PostEditChangeProperty(FPropertyChangedE
 			FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraParticleScales = FName(NameNiagaraParticleScales);
 		}
 
-		if (NameNiagaraLevelOfDetailIndex != FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraLevelOfDetailIndex.
+		if (NameNiagaraFlags != FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraFlags.
 			ToString())
 		{
 			bEditedData = true;
-			FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraLevelOfDetailIndex = FName(
-				NameNiagaraLevelOfDetailIndex);
+			FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraFlags = FName(
+				NameNiagaraFlags);
 		}
 		
 		if (NameNiagaraCustomData != FTurboSequence_Editor_LfModule::GlobalData->NameNiagaraCustomData.ToString())

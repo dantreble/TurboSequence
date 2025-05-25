@@ -16,96 +16,11 @@ struct TURBOSEQUENCE_SHADER_LF_API FMeshUnitComputeShader_Params_Lf
 	// ID for memory management
 	uint32 ShaderID;
 
-	double GetNumMB()
-	{
-		int64 Bytes = 0;
-		int32 Num;
-
-		Num = BoneSpaceAnimationIKIndex_RenderThread.Num();
-		Bytes += Num * 4;
-
-		Num = PerMeshCustomDataIndex_RenderThread.Num();
-		Bytes += Num * 4;
-
-		Num = ReferenceNumCPUBones.Num();
-		Bytes += Num * 2;
-
-		//Num = AnimationRawData_RenderThread.Num();
-		//Bytes += Num * 2 * 4;
-
-		Bytes += 4;
-		Bytes += 4;
-		Bytes += 4;
-
-		Num = PerMeshCustomDataIndex_Global_RenderThread.Num();
-		Bytes += Num * 4;
-
-		Num = PerMeshCustomDataLod_RenderThread.Num();
-		Bytes += Num * 2;
-
-		Num = PerMeshCustomDataCollectionIndex_RenderThread.Num();
-		Bytes += Num * 2;
-
-		Num = ReferenceNumCPUBones_RenderThread.Num();
-		Bytes += Num * 2;
-
-		Num = AnimationStartIndex_RenderThread.Num();
-		Bytes += Num * 4;
-
-		Num = AnimationEndIndex_RenderThread.Num();
-		Bytes += Num * 2;
-
-		Num = AnimationFramePose0_RenderThread.Num();
-		Bytes += Num * 4;
-
-		Num = AnimationWeights_RenderThread.Num();
-		Bytes += Num * 2;
-
-		Num = AnimationLayerIndex_RenderThread.Num();
-		Bytes += Num * 2;
-
-		Num = AnimationLayers_RenderThread.Num();
-		Bytes += Num * 2;
-
-		Num = BoneSpaceAnimationIKStartIndex_RenderThread.Num();
-		Bytes += Num * 4;
-
-		Num = BoneSpaceAnimationIKEndIndex_RenderThread.Num();
-		Bytes += Num * 2;
-
-		Num = BoneSpaceAnimationIKInput_RenderThread.Num();
-		Bytes += Num * 2 * 4;
-
-		Num = BoneSpaceAnimationIKData_RenderThread.Num();
-		Bytes += Num * 4;
-
-		Num = CPUInverseReferencePose.Num();
-		Bytes += Num * 2 * 4;
-
-		Num = Indices.Num();
-		Bytes += Num * 2 * 4;
-
-		Bytes += 4;
-		Bytes += 4;
-		Bytes += 4;
-
-
-		double BytesDouble = static_cast<double>(Bytes);
-
-		return BytesDouble / 1000.0 / 1000.0;
-	}
-
-	TArray<int32> BoneSpaceAnimationIKIndex_RenderThread;
-	TArray<int32> PerMeshCustomDataIndex_RenderThread;
 	TArray<int32> ReferenceNumCPUBones;
 
 	// Minimals getting uploaded to the GPU
 	int32 NumMeshes;
-	int32 NumAnimations;
-	int32 NumIKData;
-	float MaxNumIKDataRefreshTimer;
 	TArray<int32> PerMeshCustomDataIndex_Global_RenderThread;
-	TArray<int32> PerMeshCustomDataLod_RenderThread;
 	TArray<int32> PerMeshCustomDataCollectionIndex_RenderThread;
 	TArray<int32> ReferenceNumCPUBones_RenderThread;
 
@@ -131,8 +46,6 @@ struct TURBOSEQUENCE_SHADER_LF_API FMeshUnitComputeShader_Params_Lf
 	TArray<FVector4f> CPUInverseReferencePose;
 	TArray<FVector4f> Indices;
 	int32 NumMaxCPUBones;
-	int32 NumMaxGPUBones;
-	int32 NumMaxLevelOfDetails;
 
 	bool bUse32BitTransformTexture;
 
@@ -154,13 +67,15 @@ struct TURBOSEQUENCE_SHADER_LF_API FSettingsComputeShader_Params_Lf
 
 	bool bIsAdditiveWrite;
 
-	uint32 AdditiveWriteBaseIndex = GET0_NUMBER;
+	uint32 AdditiveWriteBaseIndex = 0;
 };
 
 class TURBOSEQUENCE_SHADER_LF_API FTurboSequence_BoneTransform_CS_Lf : public FGlobalShader
 {
 public:
-	inline static FIntVector3 NumThreads = FIntVector3(GET32_NUMBER, GET32_NUMBER, GET1_NUMBER);
+	inline static FIntVector3 NumThreads = FIntVector3(32, 1, 1);
+
+	static constexpr int EvaluationParentCacheSize = 4;
 
 	inline static const FString GraphName = TEXT("TurboSequence_MeshUnit_ComputeShaderExecute_{0}");
 	inline static const FString DebugName = TEXT("TurboSequence_MeshUnit_Debug_{0}");
@@ -214,9 +129,6 @@ public:
 	SHADER_USE_PARAMETER_STRUCT(FTurboSequence_BoneTransform_CS_Lf, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters,)
-		SHADER_PARAMETER(int, NumMeshesPerThread)
-		SHADER_PARAMETER(int, NumFirstGPUBones)
-
 		SHADER_PARAMETER(int, NumCPUBones)
 		SHADER_PARAMETER(int, NumMeshesPerFrame)
 
@@ -227,10 +139,6 @@ public:
 		SHADER_PARAMETER(int, OutputTextureSizeY)
 
 		SHADER_PARAMETER(int, NumDebugBuffer)
-		SHADER_PARAMETER(int, NumLevelOfDetails)
-
-		SHADER_PARAMETER(int, NumCustomStates)
-		SHADER_PARAMETER(int, NumPixelBuffer)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, ReferencePose_StructuredBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, ReferencePoseIndices_StructuredBuffer)
@@ -240,7 +148,6 @@ public:
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<int>, BoneSpaceAnimationDataStartIndex_StructuredBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<min16int>, BoneSpaceAnimationDataEndIndex_StructuredBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<int>, PerMeshCustomDataIndices_StructuredBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<min16int>, PerMeshCustomDataLod_StructuredBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<min16uint>, PerMeshCustomDataCollectionIndex_StructuredBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<min16uint>, ReferenceNumCPUBones_StructuredBuffer)
 
@@ -283,13 +190,15 @@ public:
 		OutEnvironment.SetDefine(TEXT("THREADS_X"), NumThreads.X);
 		OutEnvironment.SetDefine(TEXT("THREADS_Y"), NumThreads.Y);
 		OutEnvironment.SetDefine(TEXT("THREADS_Z"), NumThreads.Z);
+
+		OutEnvironment.SetDefine(TEXT("EVALUATION_PARENT_CACHE_SIZE"), EvaluationParentCacheSize);
 	}
 };
 
 class TURBOSEQUENCE_SHADER_LF_API FTurboSequence_Settings_CS_Lf : public FGlobalShader
 {
 public:
-	inline static FIntVector2 NumThreads = FIntVector2(GET32_NUMBER, GET32_NUMBER);
+	inline static FIntVector2 NumThreads = FIntVector2(32, 32);
 
 	inline static const FString GraphName = TEXT("TurboSequence_Settings_ComputeShaderExecute_{0}");
 	inline static const FString DebugName = TEXT("TurboSequence_Settings_Debug_{0}");
@@ -327,7 +236,7 @@ public:
 
 		OutEnvironment.SetDefine(TEXT("THREADS_X"), NumThreads.X);
 		OutEnvironment.SetDefine(TEXT("THREADS_Y"), NumThreads.Y);
-		OutEnvironment.SetDefine(TEXT("THREADS_Z"), GET1_NUMBER);
+		OutEnvironment.SetDefine(TEXT("THREADS_Z"), 1);
 	}
 };
 
@@ -358,7 +267,7 @@ public:
 	                                           const TObjectPtr<UTextureRenderTarget2DArray> Texture,
 	                                           const EPixelFormat& TextureFormat)
 	{
-		FRDGBuilder GraphBuilder(RHICmdList, FRDGEventName(*GraphName), ERDGBuilderFlags::AllowParallelExecute);
+		FRDGBuilder GraphBuilder(RHICmdList, FRDGEventName(*GraphName), ERDGBuilderFlags::Parallel);
 
 		FParameters* Parameters = GraphBuilder.AllocParameters<FParameters>();
 

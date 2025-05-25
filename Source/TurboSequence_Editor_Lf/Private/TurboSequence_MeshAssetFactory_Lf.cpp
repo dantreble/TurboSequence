@@ -3,6 +3,8 @@
 
 #include "TurboSequence_MeshAssetFactory_Lf.h"
 
+#include "TurboSequence_GlobalData_Lf.h"
+#include "TurboSequence_Helper_Lf.h"
 #include "TurboSequence_MeshAsset_Lf.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -47,8 +49,6 @@ UObject* UTurboSequence_MeshAssetFactory_Lf::FactoryCreateNew(UClass* Class, UOb
 	const TObjectPtr<UTurboSequence_MeshAsset_Lf> Asset = NewObject<UTurboSequence_MeshAsset_Lf>(
 		InParent, Class, Name, Flags, Context);
 
-	Asset->bNeedGeneratedNextEngineStart = false;
-
 	const FAssetRegistryModule& AssetRegistry = FModuleManager::LoadModuleChecked<
 		FAssetRegistryModule>("AssetRegistry");
 	TArray<FAssetData> GlobalAssetData;
@@ -57,7 +57,7 @@ UObject* UTurboSequence_MeshAssetFactory_Lf::FactoryCreateNew(UClass* Class, UOb
 	if (GlobalAssetData.Num())
 	{
 		FTurboSequence_Helper_Lf::SortAssetsByPathName(GlobalAssetData);
-		Asset->GlobalData = Cast<UTurboSequence_GlobalData_Lf>(GlobalAssetData[GET0_NUMBER].GetAsset());
+		Asset->GlobalData = Cast<UTurboSequence_GlobalData_Lf>(GlobalAssetData[0].GetAsset());
 	}
 	else
 	{
